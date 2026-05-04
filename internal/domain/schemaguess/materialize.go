@@ -49,6 +49,30 @@ func concreteVariants(acc *Accumulator, ptr string) []VariantKey {
 	return out
 }
 
+// concreteLinesAtPath sums lines_with for non-undefined variants at path (one concrete
+// observation per line). For Strategy A (oneOf), branches are disjoint by line: the sum
+// is total lines where the key was present with any of those types — use for required
+// when sum == linesTotal even though each branch’s own likelihood may be below 1.
+func concreteLinesAtPath(acc *Accumulator, path string) int {
+	n := 0
+	for k, st := range acc.Variants {
+		if k.Path != path || k.Type == TypeUndefined {
+			continue
+		}
+		n += st.LinesWith
+	}
+	return n
+}
+
+// propertyLikelihoodOne is true iff the property was present on every successful line:
+// concreteLinesAtPath == linesTotal (combined oneOf branches count as full coverage).
+func propertyLikelihoodOne(acc *Accumulator, path string, linesTotal int) bool {
+	if linesTotal <= 0 {
+		return false
+	}
+	return concreteLinesAtPath(acc, path) == linesTotal
+}
+
 func useOneOf(keys []VariantKey, acc *Accumulator, linesTotal int, threshold float64) bool {
 	if len(keys) <= 1 {
 		return false
@@ -160,14 +184,11 @@ func objectSchema(acc *Accumulator, ptr string, linesTotal int, threshold float6
 
 	for _, name := range sorted {
 		cp := JoinPointer(ptr, name)
-		u := acc.Variants[VariantKey{Path: cp, Type: TypeUndefined, Hint: ""}]
-		undef := 0
-		if u != nil {
-			undef = u.LinesWith
-		}
 		sub := materializeAt(acc, cp, threshold, linesTotal)
 		props[name] = sub
-		if undef == 0 && linesTotal > 0 {
+		// JSON Schema "required": only keys observed on every successful line (combined
+		// concrete variants → likelihood of presence == 1 vs lines_total).
+		if propertyLikelihoodOne(acc, cp, linesTotal) {
 			required = append(required, name)
 		}
 	}

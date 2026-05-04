@@ -39,6 +39,7 @@ Property row = **`(path_key, value_type, value_hint)`** with **`lines_with`** co
 
 - **Strategy B (default):** single winning variant at a path: max **`lines_with`**, tie-break higher **`likelihood`**, then lexical **`(type, hint)`**.
 - **Strategy A:** **`oneOf`** when **every** concrete variant at that path has **`likelihood` > `T`**.
+- **`required`:** only object keys whose values appear on **every** successful line in the window (sum of concrete **`lines_with`** at that pointer equals **`lines_total`** — combined presence **likelihood 1**). That sum includes **all** variants that become **`oneOf`** branches (types can vary per line; each branch’s own likelihood can stay below 1 while the union still covers every line). All other declared **`properties`** are optional.
 
 Stats **`x-guesschema-*`** live as **siblings** on emitted variant subschemas. Root always includes **`x-guesschema-generated-at`** (RFC3339) and **`x-guesschema-invalid-json-lines`**.
 
