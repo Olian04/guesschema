@@ -33,4 +33,5 @@ profile.cov
 
 # This project (Makefile / GoReleaser)
 dist/
-/echo
+/guesschema
+tmp.jsonl

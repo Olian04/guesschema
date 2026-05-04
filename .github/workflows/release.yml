@@ -20,7 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      packages: write
 
     steps:
       - name: Checkout code
@@ -70,8 +69,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version-file: architecture-template/go.mod
-          cache-dependency-path: architecture-template/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Record build timestamp and release intro
         run: |
@@ -82,27 +81,6 @@ jobs:
             echo "${{ steps.version.outputs.release_body }}"
             echo "EOF"
           } >> "$GITHUB_ENV"
-
-      - name: Set container registry metadata
-        run: |
-          OWNER="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
-          IMAGE="ghcr.io/${OWNER}/echo-template"
-          echo "REGISTRY_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
-          if [ "${{ inputs.prerelease }}" = "true" ]; then
-            echo "PUSH_LATEST=false" >> "$GITHUB_ENV"
-          else
-            echo "PUSH_LATEST=true" >> "$GITHUB_ENV"
-          fi
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create and push release tag
         run: |
@@ -121,7 +99,6 @@ jobs:
         with:
           distribution: goreleaser
           version: "~> v2"
-          workdir: architecture-template
           args: release --clean --verbose --config goreleaser/.goreleaser.yaml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -129,16 +106,14 @@ jobs:
           RELEASE_NAME: ${{ env.RELEASE_NAME }}
           RELEASE_BODY: ${{ env.RELEASE_BODY }}
           GORELEASER_CURRENT_TAG: ${{ steps.version.outputs.version }}
-          REGISTRY_IMAGE: ${{ env.REGISTRY_IMAGE }}
-          PUSH_LATEST: ${{ env.PUSH_LATEST }}
 
       - name: Job summary (GoReleaser)
         if: always()
         run: |
           {
-            echo "## Release job (echo-template)"
+            echo "## Release job (guesschema)"
             echo ""
-            echo "- **GoReleaser**: trimpath builds, Syft SBOMs, git changelog, GHCR image (\`dockers_v2\` + image SBOM), \`checksums.txt\`, GitHub Release."
+            echo "- **GoReleaser**: trimpath cross-builds, Syft SBOMs, git changelog, GitHub Release assets (\`checksums.txt\`, per-OS/arch binaries)."
             echo ""
-            echo "Inspect **Run GoReleaser** in the Actions UI for build and Docker timing."
+            echo "Install: \`go install github.com/Olian04/guesschema/cmd/guesschema@<tag>\` or \`go get -tool\` + \`go tool\` (see release notes footer)."
           } >> "$GITHUB_STEP_SUMMARY"

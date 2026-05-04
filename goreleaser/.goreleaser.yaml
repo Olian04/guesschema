@@ -1,19 +1,16 @@
 # GoReleaser: https://goreleaser.com/
-# Run from architecture-template/ (CI sets workdir). Locally: cd architecture-template && goreleaser check --config goreleaser/.goreleaser.yaml
-#
-# CI sets: APP_BUILD_TIME, RELEASE_NAME, RELEASE_BODY, REGISTRY_IMAGE, PUSH_LATEST, GORELEASER_CURRENT_TAG
 version: 2
 
-project_name: echo-template
+project_name: guesschema
 
 before:
   hooks:
     - go mod download
 
 builds:
-  - id: echo
-    main: ./cmd/echo
-    binary: echo
+  - id: guesschema
+    main: ./cmd/guesschema
+    binary: guesschema
     dir: .
     flags:
       - -trimpath
@@ -29,25 +26,24 @@ builds:
     ldflags:
       - -s
       - -w
-      - -X github.com/Olian04/go-app-template/cmd/echo/version.Version={{ .Tag }}
-      - -X github.com/Olian04/go-app-template/cmd/echo/version.Revision={{ .Commit }}
-      - -X github.com/Olian04/go-app-template/cmd/echo/version.BuildTime={{ .Env.APP_BUILD_TIME }}
+      - -X github.com/Olian04/guesschema/cmd/guesschema/version.Version={{ .Tag }}
+      - -X github.com/Olian04/guesschema/cmd/guesschema/version.Revision={{ .Commit }}
+      - -X github.com/Olian04/guesschema/cmd/guesschema/version.BuildTime={{ .Env.APP_BUILD_TIME }}
 
 archives:
-  - id: echo
+  - id: guesschema
     formats: [binary]
     name_template: "{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
     ids:
-      - echo
-
+      - guesschema
 checksum:
   name_template: checksums.txt
 
 sboms:
-  - id: echo
+  - id: guesschema
     artifacts: binary
     ids:
-      - echo
+      - guesschema
     disable: false
 
 changelog:
@@ -62,25 +58,6 @@ changelog:
       - "^ci:"
       - "^docs:"
 
-dockers_v2:
-  - dockerfile: goreleaser/Dockerfile
-    ids:
-      - echo
-    images:
-      - "{{ .Env.REGISTRY_IMAGE }}"
-    tags:
-      - "{{ .Tag }}"
-      - '{{ if eq .Env.PUSH_LATEST "true" }}latest{{ end }}'
-    platforms:
-      - linux/amd64
-      - linux/arm64
-    build_args:
-      VERSION: "{{ .Tag }}"
-      REVISION: "{{ .Commit }}"
-      BUILD_TIME: "{{ .Env.APP_BUILD_TIME }}"
-    disable: "{{ .IsSnapshot }}"
-    sbom: true
-
 release:
   prerelease: auto
   name_template: "{{ .Env.RELEASE_NAME }}"
@@ -88,38 +65,33 @@ release:
     {{ .Env.RELEASE_BODY }}
 
   footer: |
-    ## Downloads
+    ## Install with the Go toolchain
+
+    **Global binary** (typical):
+
+    ```bash
+    go install github.com/Olian04/guesschema/cmd/guesschema@{{ .Tag }}
+    ```
+
+    **Pinned in another module** (reproducible, runs via `go tool`):
+
+    ```bash
+    go get -tool github.com/Olian04/guesschema/cmd/guesschema@{{ .Tag }}
+    go tool github.com/Olian04/guesschema/cmd/guesschema --help
+    ```
+
+    Use `@latest` or a semver tag as needed.
+
+    ## Pre-built binaries
 
     | Asset | Description |
     |-------|-------------|
     | `checksums.txt` | SHA256 checksums for all files in this release |
-    | `echo-template_*` | Per-OS/arch binaries |
-    | `*.sbom.json` | SPDX JSON SBOM per binary ([Syft](https://github.com/anchore/syft)) |
+    | `guesschema_*` | Per-OS/arch binaries (no archive wrapper; raw binary names) |
+    | `*.sbom.json` | SPDX JSON SBOM per binary |
 
     Verify after download (Linux/macOS):
 
     ```bash
     sha256sum -c checksums.txt
-    ```
-
-    On Windows, verify the printed SHA256 against the file from `checksums.txt` using your preferred tool.
-
-    {{ if .Env.REGISTRY_IMAGE }}## Container image
-
-    Multi-arch (`linux/amd64`, `linux/arm64`) OCI image on GHCR. The image build includes SBOM attestations (see BuildKit / `dockers_v2`).
-
-    ```bash
-    docker pull {{ .Env.REGISTRY_IMAGE }}:{{ .Tag }}
-    ```
-    {{ end }}
-    ## macOS Gatekeeper
-
-    If macOS shows a Gatekeeper warning (“Apple could not verify…”):
-
-    ```bash
-    # Apple Silicon (arm64)
-    xattr -d com.apple.quarantine echo-template-darwin-arm64
-
-    # Intel (amd64)
-    xattr -d com.apple.quarantine echo-template-darwin-amd64
     ```

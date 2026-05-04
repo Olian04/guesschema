@@ -1,4 +1,4 @@
-.PHONY: build format lint run test test-race
+.PHONY: build format lint run test test-race help
 
 SOURCE_CODE ?= ./cmd/... ./internal/... ./test/unit/...
 REV := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
@@ -8,19 +8,19 @@ BUILD_OUTPUT_DIR := ./dist
 help: ## Show available make targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_.-]+:.*##/ {printf "%-24s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-build: ## Build echo binary from ./cmd/echo
+build: ## Build guesschema binary to ./dist/guesschema
 build:
 	mkdir -p $(BUILD_OUTPUT_DIR)
-	go build -trimpath -ldflags "-s -w -X github.com/Olian04/go-app-template/cmd/echo/version.Revision=$(REV) -X github.com/Olian04/go-app-template/cmd/echo/version.BuildTime=$(BUILD_TIME)" -o $(BUILD_OUTPUT_DIR)/echo ./cmd/echo
+	go build -trimpath -ldflags "-s -w -X github.com/Olian04/guesschema/cmd/guesschema/version.Revision=$(REV) -X github.com/Olian04/guesschema/cmd/guesschema/version.BuildTime=$(BUILD_TIME)" -o $(BUILD_OUTPUT_DIR)/guesschema ./cmd/guesschema
 
-run: ## Run echo binary from ./cmd/echo
-	go run ./cmd/echo
+run: ## Run guesschema from source (stdin JSONL → stdout schema)
+	go run ./cmd/guesschema
 
 format: ## Run go fmt and gofmt
 	go fmt ./...
 	gofmt -w .
 
-lint: ## Run go vet, module verify, vuln scan, golangci (incl. staticcheck, errcheck, gosec, revive)
+lint: ## Run go vet, module verify, vuln scan, golangci
 	go vet ./...
 	go mod verify
 	go tool govulncheck $(SOURCE_CODE)
@@ -29,5 +29,5 @@ lint: ## Run go vet, module verify, vuln scan, golangci (incl. staticcheck, errc
 test: ## Run unit tests
 	go test -shuffle=on -timeout 120s $(SOURCE_CODE)
 
-test-race: ## Run unit tests with race detector	
+test-race: ## Run unit tests with race detector
 	go test -race -shuffle=on -timeout 180s $(SOURCE_CODE)
