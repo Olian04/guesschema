@@ -3,7 +3,6 @@ module github.com/Olian04/guesschema
 go 1.26
 
 tool (
-	github.com/Olian04/guesschema/cmd/guesschema
 	github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 	golang.org/x/vuln/cmd/govulncheck
 )

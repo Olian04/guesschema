@@ -34,7 +34,7 @@ Use `%w` when wrapping errors in `cmd` / `internal/app`. Default logger discarde
 
 ## Releases
 
-GoReleaser publishes **pre-built binaries** and SBOMs to GitHub Releases (no Docker image). Install from source with **`go install github.com/Olian04/guesschema/cmd/guesschema@<tag>`** or pin with **`go get -tool`** and run **`go tool github.com/Olian04/guesschema/cmd/guesschema`**. This module’s **`go.mod`** `tool` block includes `cmd/guesschema` for **`go tool`** from a checkout.
+GoReleaser publishes **pre-built binaries** and SBOMs to GitHub Releases (no Docker image). Install from source with **`go install github.com/Olian04/guesschema/cmd/guesschema@<tag>`**; in **another** module, **`go get -tool`** + **`go tool github.com/Olian04/guesschema/cmd/guesschema`** pins the CLI. In **this** repo, use **`go run ./cmd/guesschema`** or **`make build`** — do not list `cmd/guesschema` under **`tool`** in `go.mod` (that block is for external dev tools like golangci-lint).
 
 ## Go proverbs ([source](https://go-proverbs.github.io/), compressed)
 
