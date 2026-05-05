@@ -50,6 +50,19 @@ func TestRunGuesschema_noExtra(t *testing.T) {
 			t.Fatalf("unexpected vendor key in output: %q", k)
 		}
 	}
+	props, ok := doc["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected properties map, got %T", doc["properties"])
+	}
+	a, ok := props["a"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected properties.a map, got %T", props["a"])
+	}
+	for k := range a {
+		if len(k) >= 2 && k[0] == 'x' && k[1] == '-' {
+			t.Fatalf("unexpected nested vendor key in properties.a: %q", k)
+		}
+	}
 }
 
 func TestValidateGuesschemaFlags(t *testing.T) {
