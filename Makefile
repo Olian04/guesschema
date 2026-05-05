@@ -1,6 +1,7 @@
 .PHONY: build format lint run test test-race help
 
-SOURCE_CODE ?= ./cmd/... ./internal/... ./test/unit/...
+SOURCE_CODE ?= ./cmd/... ./internal/...
+TEST_CODE ?= ./test/...
 REV := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 BUILD_OUTPUT_DIR := ./dist
@@ -27,7 +28,7 @@ lint: ## Run go vet, module verify, vuln scan, golangci
 	go tool golangci-lint run $(SOURCE_CODE)
 
 test: ## Run unit tests
-	go test -shuffle=on -timeout 120s $(SOURCE_CODE)
+	go test -shuffle=on -timeout 120s $(TEST_CODE)
 
 test-race: ## Run unit tests with race detector
-	go test -race -shuffle=on -timeout 180s $(SOURCE_CODE)
+	go test -race -shuffle=on -timeout 180s $(TEST_CODE)
