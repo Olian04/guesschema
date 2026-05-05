@@ -25,6 +25,7 @@ type GuesschemaConfig struct {
 	Every            time.Duration // zero => once mode; else periodic
 	VariantThreshold float64       // T for oneOf vs winner (default 0.1 in cmd)
 	NoExtra          bool          // strip JSON object keys starting with "x-" before stdout
+	StartOnNextMsg   bool          // start each read-window only after first received line
 	Debug            bool
 }
 
@@ -45,7 +46,17 @@ func effectiveReadWindow(cfg GuesschemaConfig) time.Duration {
 
 func runOnce(ctx context.Context, in io.Reader, out io.Writer, cfg GuesschemaConfig) error {
 	acc := schemaguess.NewAccumulator()
-	eof, err := readPhase(ctx, in, acc, effectiveReadWindow(cfg))
+	rw := effectiveReadWindow(cfg)
+	var (
+		eof bool
+		err error
+	)
+	if _, ok := probeReadDeadlineSupport(in); ok {
+		eof, err = readPhase(ctx, in, acc, rw)
+	} else {
+		pump := startLinePump(ctx, in)
+		eof, err = readPhaseFromPump(ctx, acc, rw, pump.lines, pump.errs, cfg.StartOnNextMsg)
+	}
 	if err != nil {
 		return err
 	}
@@ -66,6 +77,11 @@ func runPeriodic(ctx context.Context, in io.Reader, out io.Writer, cfg Guesschem
 
 	acc := schemaguess.NewAccumulator()
 	var lastStart time.Time
+	_, deadlineSupported := probeReadDeadlineSupport(in)
+	var pump linePump
+	if !deadlineSupported {
+		pump = startLinePump(ctx, in)
+	}
 
 	for cycle := 0; ; cycle++ {
 		if err := ctx.Err(); err != nil {
@@ -89,7 +105,15 @@ func runPeriodic(ctx context.Context, in io.Reader, out io.Writer, cfg Guesschem
 		if cfg.Debug {
 			slog.Info("guesschema periodic cycle", "cycle", cycle, "read_window", rw, "every", every)
 		}
-		eof, err := readPhase(ctx, in, acc, rw)
+		var (
+			eof bool
+			err error
+		)
+		if deadlineSupported {
+			eof, err = readPhase(ctx, in, acc, rw)
+		} else {
+			eof, err = readPhaseFromPump(ctx, acc, rw, pump.lines, pump.errs, cfg.StartOnNextMsg)
+		}
 		if err != nil {
 			return err
 		}
@@ -111,6 +135,56 @@ func isTimeout(err error) bool {
 	}
 	var ne net.Error
 	return errors.As(err, &ne) && ne.Timeout()
+}
+
+func probeReadDeadlineSupport(in io.Reader) (*os.File, bool) {
+	fin, isFile := in.(*os.File)
+	if !isFile {
+		return nil, false
+	}
+	if err := fin.SetReadDeadline(time.Now().Add(time.Millisecond)); err != nil {
+		_ = fin.SetReadDeadline(time.Time{})
+		return fin, false
+	}
+	_ = fin.SetReadDeadline(time.Time{})
+	return fin, true
+}
+
+type linePump struct {
+	lines <-chan []byte
+	errs  <-chan error
+}
+
+func startLinePump(ctx context.Context, in io.Reader) linePump {
+	lines := make(chan []byte, 16)
+	errs := make(chan error, 1)
+	br := bufio.NewReaderSize(in, 64*1024)
+	go func() {
+		defer close(lines)
+		defer close(errs)
+		for {
+			line, err := br.ReadBytes('\n')
+			if len(line) > maxJSONLLineBytes {
+				errs <- errors.New("jsonl line exceeds max size")
+				return
+			}
+			if len(line) > 0 {
+				select {
+				case lines <- trimCRLF(line):
+				case <-ctx.Done():
+					return
+				}
+			}
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					return
+				}
+				errs <- err
+				return
+			}
+		}
+	}()
+	return linePump{lines: lines, errs: errs}
 }
 
 // readPhase accumulates until read window elapses, ctx cancelled, or EOF on stdin.
@@ -225,6 +299,48 @@ func readPhaseWithoutReadDeadline(ctx context.Context, br *bufio.Reader, acc *sc
 	}
 }
 
+func readPhaseFromPump(ctx context.Context, acc *schemaguess.Accumulator, window time.Duration, lines <-chan []byte, errs <-chan error, startOnNextMsg bool) (eof bool, err error) {
+	var (
+		timer  *time.Timer
+		timerC <-chan time.Time
+	)
+	if !startOnNextMsg {
+		timer = time.NewTimer(window)
+		timerC = timer.C
+		defer timer.Stop()
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-timerC:
+			return false, nil
+		case err, ok := <-errs:
+			if !ok {
+				errs = nil
+				continue
+			}
+			if err != nil {
+				return false, err
+			}
+		case line, ok := <-lines:
+			if !ok {
+				return true, nil
+			}
+			if len(line) == 0 {
+				continue
+			}
+			if startOnNextMsg && timer == nil {
+				timer = time.NewTimer(window)
+				timerC = timer.C
+				defer timer.Stop()
+			}
+			if err := acc.ObserveLine(line); err != nil {
+				return false, err
+			}
+		}
+	}
+}
 func trimCRLF(line []byte) []byte {
 	if len(line) > 0 && line[len(line)-1] == '\n' {
 		line = line[:len(line)-1]
@@ -247,9 +363,6 @@ func emitSchema(out io.Writer, acc *schemaguess.Accumulator, cfg GuesschemaConfi
 	b = append(b, '\n')
 	if _, werr := out.Write(b); werr != nil {
 		return werr
-	}
-	if f, ok := out.(*os.File); ok {
-		return f.Sync()
 	}
 	return nil
 }

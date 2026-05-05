@@ -64,6 +64,10 @@ func main() {
 				Name:  "no-extra",
 				Usage: "Omit JSON Schema vendor extensions (strip object keys starting with x- from output)",
 			},
+			&cli.BoolFlag{
+				Name:  "start-window-on-next-message",
+				Usage: "Start each read-window only after first received JSONL line",
+			},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
 			debug := c.Bool("debug")
@@ -85,6 +89,7 @@ func main() {
 				Every:            every,
 				VariantThreshold: variantThreshold,
 				NoExtra:          c.Bool("no-extra"),
+				StartOnNextMsg:   c.Bool("start-window-on-next-message"),
 				Debug:            debug,
 			}
 			return app.RunGuesschema(ctx, os.Stdin, os.Stdout, cfg)
