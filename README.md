@@ -19,27 +19,17 @@ Use `@latest` or a concrete tag. Each GitHub **Release** also attaches **pre-bui
 
 ## Usage
 
-**Default (single emit):** read for at most **`--read-window`** (default **1s** if omitted), emit one schema, exit. If **EOF** arrives first, emit on EOF.
+Read for at most **`--read-window`** (default **1s**), emit one schema, exit. If **EOF** arrives first, emit on EOF.
 
 ```bash
 printf '%s\n' '{"id":1,"name":"a"}' '{"id":2,"name":"b"}' | ./dist/guesschema
 ```
 
-**Periodic:** **`--every`** runs repeated read → emit → reset cycles. Spacing targets **time between window starts** (ticker + `lastWindowStarted`, not “sleep `every` after each cycle”). Requires **`every` ≥ default read window** (so at least **1s** with default **`--read-window`**).
-
-```bash
-printf '%s\n' '{"x":1}' | ./dist/guesschema --every 2s --read-window 1s
-```
-
-Each stdout line is one JSON schema (NDJSON) in periodic mode.
-
 ## Flags
 
 | Flag                             | Meaning                                                                                                        |
 | -------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `--once`                         | Explicit single-shot (default when `--every` is not set).                                                      |
-| `--every <duration>`             | Periodic mode; mutually exclusive with `--once`.                                                               |
-| `--read-window <duration>`       | Max wall time to read per window (default **1s** if omitted).                                                  |
+| `--read-window <duration>`       | Max wall time to read JSONL (default **1s**).                                                                  |
 | `--variant-threshold <float>`    | **T** for same-path `oneOf` vs single winner (default **0.1**).                                                |
 | `--no-extra`                     | Strip vendor extensions: remove object keys starting with **`x-`** from stdout JSON.                           |
 | `--start-window-on-next-message` | Start each read-window only after first received JSONL line. Useful to avoid empty-window emits on idle stdin. |
@@ -54,6 +44,44 @@ Each stdout line is one JSON schema (NDJSON) in periodic mode.
 - Per-variant stats as siblings: **`x-guesschema-lines-with`**, **`x-guesschema-lines-total`**, **`x-guesschema-likelihood`**
 
 Paths follow [RFC 6901](https://www.rfc-editor.org/rfc/rfc6901) from each line’s JSON root.
+
+## Library
+
+Import **`github.com/Olian04/guesschema/pkg/guesschema`**. Build a **`Guesser`** with **`New`** and functional options, then **`Run`** per JSONL stream:
+
+```go
+import (
+    "bytes"
+    "context"
+    "strings"
+    "time"
+
+    "github.com/Olian04/guesschema/pkg/guesschema"
+)
+
+g, err := guesschema.New(
+    guesschema.WithReadWindow(time.Second),
+    guesschema.WithVariantThreshold(0.1),
+)
+if err != nil {
+    return err
+}
+var out bytes.Buffer
+return g.Run(ctx, strings.NewReader("{\"a\":1}\n"), &out)
+```
+
+Lower-level schema inference without time windows uses the same package: **`NewAccumulator`**, **`BuildSchema`**, etc. See godoc on **`With*`** options for streaming examples.
+
+## Testing
+
+**All tests live under `test/`** — no `*_test.go` beside production code (`cmd/`, `internal/`, or `pkg/`). Tests assert **consumer contracts** only, not `internal/` implementation.
+
+| Layer | What is tested | Where |
+| --- | --- | --- |
+| **Library** | Public API: `pkg/guesschema` (`New`, `Guesser.Run`, `With*`, `NewAccumulator`, `BuildSchema`) | `test/unit/pkg/guesschema/` |
+| **CLI** | Compiled `cmd/guesschema` binary (stdin/stdout/flags, including invalid flags), same as a shell pipeline | `test/blackbox/` |
+
+Do **not** import `internal/guesschema` from tests. Run **`make test`** or **`go test ./...`**.
 
 ## Agent / contributor context
 

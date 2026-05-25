@@ -24,7 +24,7 @@ Apply all rules below unless user narrows scope.
 - **Interfaces:** define where used; keep small (about 1-3 methods); accept interfaces, return concrete types when that improves coupling/testability.
 - **Concurrency:** `context.Context` first for cancel/timeout work; use `errgroup` for coordinated goroutines; use `sync.Mutex` (or fitting sync primitive) for shared mutable state instead of forcing channel pattern.
 - **Structure:** `cmd/` for entrypoints; `internal/` (or clear internal layout) for library code; no `util`/`helpers` junk-drawer packages; package names singular lowercase.
-- **Test placement:** unit tests for `cmd/*` and `internal/*` should live under `test/unit/...`, mirroring the package they test. Cross-package suites live under `test/integration`, `test/regression`, or `test/benchmark`.
+- **Test placement:** all tests under `test/` only (no `*_test.go` in `cmd/`, `internal/`, `pkg/`). Unit tests: `test/unit/pkg/...` import `pkg/` only. Blackbox: `test/blackbox/...` exec compiled `cmd/guesschema`, no `pkg`/`internal` imports.
 
 ### Principles and patterns (common Go practice)
 

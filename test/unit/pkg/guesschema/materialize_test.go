@@ -1,4 +1,4 @@
-package schemaguess_test
+package guesschema_test
 
 import (
 	"encoding/json"
@@ -6,17 +6,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Olian04/guesschema/internal/domain/schemaguess"
+	"github.com/Olian04/guesschema/pkg/guesschema"
 )
 
 func TestBuildSchema_strategyB(t *testing.T) {
 	t.Parallel()
-	a := schemaguess.NewAccumulator()
+	a := guesschema.NewAccumulator()
 	_ = a.ObserveLine([]byte(`{"x":1}`))
 	_ = a.ObserveLine([]byte(`{"x":1}`))
 	_ = a.ObserveLine([]byte(`{"x":"hi"}`))
-	// T high enough that not every variant clears the bar → Strategy B (single winner).
-	s := schemaguess.BuildSchema(a, 0.5, time.Unix(1, 0).UTC())
+	s := guesschema.BuildSchema(a, 0.5, time.Unix(1, 0).UTC())
 	if s["$schema"] == nil {
 		t.Fatal("missing $schema")
 	}
@@ -43,7 +42,7 @@ func TestBuildSchema_strategyB(t *testing.T) {
 
 func TestBuildSchema_oneOfWhenAllLikely(t *testing.T) {
 	t.Parallel()
-	a := schemaguess.NewAccumulator()
+	a := guesschema.NewAccumulator()
 	for range 4 {
 		_ = a.ObserveLine([]byte(`{"x":1}`))
 	}
@@ -53,14 +52,13 @@ func TestBuildSchema_oneOfWhenAllLikely(t *testing.T) {
 	for range 3 {
 		_ = a.ObserveLine([]byte(`{"x":true}`))
 	}
-	s := schemaguess.BuildSchema(a, 0.1, time.Unix(2, 0).UTC())
+	s := guesschema.BuildSchema(a, 0.1, time.Unix(2, 0).UTC())
 	props := s["properties"].(map[string]any)
 	x := props["x"].(map[string]any)
 	if _, ok := x["oneOf"]; !ok {
 		out, _ := json.MarshalIndent(x, "", "  ")
 		t.Fatalf("expected oneOf at x, got %s", out)
 	}
-	// Key x on every line with varying types → combined coverage == lines_total → still required.
 	var req []string
 	switch v := s["required"].(type) {
 	case []string:
@@ -79,12 +77,12 @@ func TestBuildSchema_oneOfWhenAllLikely(t *testing.T) {
 
 func TestBuildSchema_variantBelowThresholdUsesWinner(t *testing.T) {
 	t.Parallel()
-	a := schemaguess.NewAccumulator()
+	a := guesschema.NewAccumulator()
 	for range 9 {
 		_ = a.ObserveLine([]byte(`{"x":1}`))
 	}
 	_ = a.ObserveLine([]byte(`{"x":"rare"}`))
-	s := schemaguess.BuildSchema(a, 0.1, time.Unix(3, 0).UTC())
+	s := guesschema.BuildSchema(a, 0.1, time.Unix(3, 0).UTC())
 	props := s["properties"].(map[string]any)
 	x := props["x"].(map[string]any)
 	if x["type"] != "number" {
@@ -94,16 +92,52 @@ func TestBuildSchema_variantBelowThresholdUsesWinner(t *testing.T) {
 
 func TestBuildSchema_requiredOmittedWhenNotOnAllLines(t *testing.T) {
 	t.Parallel()
-	a := schemaguess.NewAccumulator()
+	a := guesschema.NewAccumulator()
 	_ = a.ObserveLine([]byte(`{"a":1}`))
 	_ = a.ObserveLine([]byte(`{"a":2}`))
 	_ = a.ObserveLine([]byte(`{}`))
-	s := schemaguess.BuildSchema(a, 0.1, time.Unix(4, 0).UTC())
+	s := guesschema.BuildSchema(a, 0.1, time.Unix(4, 0).UTC())
 	props := s["properties"].(map[string]any)
 	if _, ok := props["a"]; !ok {
 		t.Fatal("expected property a")
 	}
 	if _, has := s["required"]; has {
 		t.Fatalf("a missing on one line → not all likelihood 1; should not set required, got %#v", s["required"])
+	}
+}
+
+func TestBuildSchema_optionalKeyAfterAbsence(t *testing.T) {
+	t.Parallel()
+	a := guesschema.NewAccumulator()
+	_ = a.ObserveLine([]byte(`{"a":1}`))
+	_ = a.ObserveLine([]byte(`{"a":2,"b":true}`))
+	_ = a.ObserveLine([]byte(`{"a":3}`))
+	s := guesschema.BuildSchema(a, 0.1, time.Unix(5, 0).UTC())
+	props := s["properties"].(map[string]any)
+	if _, ok := props["b"]; !ok {
+		t.Fatal("expected optional property b")
+	}
+	if req, ok := s["required"].([]any); ok {
+		for _, r := range req {
+			if r == "b" {
+				t.Fatalf("b only on one line → not required, got %#v", s["required"])
+			}
+		}
+	}
+	if req, ok := s["required"].([]string); ok && slices.Contains(req, "b") {
+		t.Fatalf("b only on one line → not required, got %#v", req)
+	}
+}
+
+func TestBuildSchema_escapedPropertyName(t *testing.T) {
+	t.Parallel()
+	a := guesschema.NewAccumulator()
+	if err := a.ObserveLine([]byte(`{"b/c":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	s := guesschema.BuildSchema(a, 0.1, time.Unix(6, 0).UTC())
+	props := s["properties"].(map[string]any)
+	if _, ok := props["b/c"]; !ok {
+		t.Fatalf("expected property b/c, got keys %#v", props)
 	}
 }

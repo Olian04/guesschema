@@ -10,11 +10,11 @@ Goal: keep product words, package boundaries, repo conventions aligned.
 
 Before big edits, skim/re-read `docs/AGENTS.md` (and deeper refs it points to). Treat as source of truth for:
 
-- Terminology: **guesschema** CLI, JSONL stdin → JSON Schema stdout, **`--once`** vs **`--every`**, read-window, periodic ticker + **`lastWindowStarted`** (spacing between window starts).
-- Layout/responsibility: **`cmd/guesschema`**, **`internal/app`** (stdin + timers + emit), **`internal/domain/schemaguess`**, **`test/unit`** mirrors.
-- Naming/imports: domain stays free of `internal/app` imports; keep action-oriented names in `internal/app`.
+- Terminology: **guesschema** CLI, JSONL stdin → JSON Schema stdout, **`--read-window`**, library **`Guesser.Run`** (single emit).
+- Layout/responsibility: **`cmd/guesschema`**, **`pkg/guesschema`**, **`internal/guesschema`** (implementation only, not tested directly); **`test/unit/pkg/guesschema`** = library contract; **`test/blackbox`** = CLI contract.
+- Naming/imports: domain stays free of orchestration imports; **`internal` must not import `pkg`**; public API lives under **`pkg/`**.
 - Errors: wrap with `%w` where appropriate; default slog discarded unless **`--debug`** (stderr).
-- Anti-patterns: no catch-all `util` / `helpers`; test behavior in `internal/` and domain packages.
+- Anti-patterns: no catch-all `util` / `helpers`; **all tests under `test/` only** (no `*_test.go` in `cmd/`, `internal/`, `pkg/`); never import `internal/` from tests.
 
 If generic advice conflicts with `docs/AGENTS.md`, pick `docs/AGENTS.md`.
 If public behavior or big package boundaries change, update `docs/AGENTS.md` in same effort.

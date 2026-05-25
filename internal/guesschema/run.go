@@ -1,4 +1,4 @@
-package app
+package guesschema
 
 import (
 	"bufio"
@@ -6,124 +6,38 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"net"
 	"os"
 	"strings"
 	"time"
-
-	"github.com/Olian04/guesschema/internal/domain/schemaguess"
 )
-
-const defaultReadWindow = time.Second
 
 const maxJSONLLineBytes = 16 << 20
 
-// GuesschemaConfig drives stdin JSONL scanning and schema emission.
-type GuesschemaConfig struct {
-	ReadWindow       time.Duration // max read time per phase; zero => default 1s
-	Every            time.Duration // zero => once mode; else periodic
-	VariantThreshold float64       // T for oneOf vs winner (default 0.1 in cmd)
-	NoExtra          bool          // strip JSON object keys starting with "x-" before stdout
-	StartOnNextMsg   bool          // start each read-window only after first received line
-	Debug            bool
-}
-
-// RunGuesschema reads JSONL from in, writes JSON Schema 2020-12 to out (NDJSON when periodic).
-func RunGuesschema(ctx context.Context, in io.Reader, out io.Writer, cfg GuesschemaConfig) error {
-	if cfg.Every > 0 {
-		return runPeriodic(ctx, in, out, cfg)
-	}
-	return runOnce(ctx, in, out, cfg)
-}
-
-func effectiveReadWindow(cfg GuesschemaConfig) time.Duration {
-	if cfg.ReadWindow > 0 {
-		return cfg.ReadWindow
-	}
-	return defaultReadWindow
-}
-
-func runOnce(ctx context.Context, in io.Reader, out io.Writer, cfg GuesschemaConfig) error {
-	acc := schemaguess.NewAccumulator()
-	rw := effectiveReadWindow(cfg)
+// Run reads JSONL from in, writes one JSON Schema 2020-12 document to out,
+// and returns ctx.Err() when ctx is canceled.
+func (g *Guesser) Run(ctx context.Context, in io.Reader, out io.Writer) error {
+	acc := NewAccumulator()
 	var (
 		eof bool
 		err error
 	)
 	if _, ok := probeReadDeadlineSupport(in); ok {
-		eof, err = readPhase(ctx, in, acc, rw)
+		eof, err = readPhase(ctx, in, acc, g.cfg.readWindow)
 	} else {
 		pump := startLinePump(ctx, in)
-		eof, err = readPhaseFromPump(ctx, acc, rw, pump.lines, pump.errs, cfg.StartOnNextMsg)
+		eof, err = readPhaseFromPump(ctx, acc, g.cfg.readWindow, pump.lines, pump.errs, g.cfg.startOnNextMsg)
 	}
 	if err != nil {
 		return err
 	}
-	if err := emitSchema(out, acc, cfg); err != nil {
+	if err := g.emitSchema(out, acc); err != nil {
 		return err
 	}
-	if cfg.Debug && !eof {
-		slog.Info("guesschema once: read window elapsed before EOF")
+	if !eof {
+		g.cfg.logger.Debug("guesschema: read window elapsed before EOF")
 	}
 	return nil
-}
-
-func runPeriodic(ctx context.Context, in io.Reader, out io.Writer, cfg GuesschemaConfig) error {
-	every := cfg.Every
-	rw := effectiveReadWindow(cfg)
-	ticker := time.NewTicker(every)
-	defer ticker.Stop()
-
-	acc := schemaguess.NewAccumulator()
-	var lastStart time.Time
-	_, deadlineSupported := probeReadDeadlineSupport(in)
-	var pump linePump
-	if !deadlineSupported {
-		pump = startLinePump(ctx, in)
-	}
-
-	for cycle := 0; ; cycle++ {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if cycle > 0 {
-		waitTick:
-			for {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-ticker.C:
-					if time.Since(lastStart) >= every {
-						break waitTick
-					}
-				}
-			}
-		}
-		lastStart = time.Now()
-		acc.Reset()
-		if cfg.Debug {
-			slog.Info("guesschema periodic cycle", "cycle", cycle, "read_window", rw, "every", every)
-		}
-		var (
-			eof bool
-			err error
-		)
-		if deadlineSupported {
-			eof, err = readPhase(ctx, in, acc, rw)
-		} else {
-			eof, err = readPhaseFromPump(ctx, acc, rw, pump.lines, pump.errs, cfg.StartOnNextMsg)
-		}
-		if err != nil {
-			return err
-		}
-		if err := emitSchema(out, acc, cfg); err != nil {
-			return err
-		}
-		if eof {
-			return nil
-		}
-	}
 }
 
 func isTimeout(err error) bool {
@@ -187,13 +101,11 @@ func startLinePump(ctx context.Context, in io.Reader) linePump {
 	return linePump{lines: lines, errs: errs}
 }
 
-// readPhase accumulates until read window elapses, ctx cancelled, or EOF on stdin.
-func readPhase(ctx context.Context, in io.Reader, acc *schemaguess.Accumulator, window time.Duration) (eof bool, err error) {
+func readPhase(ctx context.Context, in io.Reader, acc *Accumulator, window time.Duration) (eof bool, err error) {
 	deadEnd := time.Now().Add(window)
 	br := bufio.NewReaderSize(in, 64*1024)
 	fin, isFile := in.(*os.File)
 
-	// Some stdin/pipe/terminal types reject SetReadDeadline ("file type does not support deadline").
 	readDeadlineOK := false
 	if isFile {
 		if err := fin.SetReadDeadline(time.Now().Add(time.Millisecond)); err == nil {
@@ -209,7 +121,7 @@ func readPhase(ctx context.Context, in io.Reader, acc *schemaguess.Accumulator, 
 	return readPhaseWithoutReadDeadline(ctx, br, acc, deadEnd)
 }
 
-func readPhaseWithReadDeadline(ctx context.Context, br *bufio.Reader, fin *os.File, acc *schemaguess.Accumulator, deadEnd time.Time) (eof bool, err error) {
+func readPhaseWithReadDeadline(ctx context.Context, br *bufio.Reader, fin *os.File, acc *Accumulator, deadEnd time.Time) (eof bool, err error) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -264,9 +176,7 @@ func readPhaseWithReadDeadline(ctx context.Context, br *bufio.Reader, fin *os.Fi
 	}
 }
 
-// readPhaseWithoutReadDeadline runs when SetReadDeadline is not supported on this reader.
-// The read budget is enforced between lines (a blocking ReadBytes may exceed deadEnd).
-func readPhaseWithoutReadDeadline(ctx context.Context, br *bufio.Reader, acc *schemaguess.Accumulator, deadEnd time.Time) (eof bool, err error) {
+func readPhaseWithoutReadDeadline(ctx context.Context, br *bufio.Reader, acc *Accumulator, deadEnd time.Time) (eof bool, err error) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -299,7 +209,7 @@ func readPhaseWithoutReadDeadline(ctx context.Context, br *bufio.Reader, acc *sc
 	}
 }
 
-func readPhaseFromPump(ctx context.Context, acc *schemaguess.Accumulator, window time.Duration, lines <-chan []byte, errs <-chan error, startOnNextMsg bool) (eof bool, err error) {
+func readPhaseFromPump(ctx context.Context, acc *Accumulator, window time.Duration, lines <-chan []byte, errs <-chan error, startOnNextMsg bool) (eof bool, err error) {
 	var (
 		timer  *time.Timer
 		timerC <-chan time.Time
@@ -341,6 +251,7 @@ func readPhaseFromPump(ctx context.Context, acc *schemaguess.Accumulator, window
 		}
 	}
 }
+
 func trimCRLF(line []byte) []byte {
 	if len(line) > 0 && line[len(line)-1] == '\n' {
 		line = line[:len(line)-1]
@@ -351,9 +262,9 @@ func trimCRLF(line []byte) []byte {
 	return line
 }
 
-func emitSchema(out io.Writer, acc *schemaguess.Accumulator, cfg GuesschemaConfig) error {
-	doc := schemaguess.BuildSchema(acc, cfg.VariantThreshold, time.Now())
-	if cfg.NoExtra {
+func (g *Guesser) emitSchema(out io.Writer, acc *Accumulator) error {
+	doc := BuildSchema(acc, g.cfg.variantThreshold, time.Now())
+	if g.cfg.omitVendorExt {
 		stripXVendorKeys(doc)
 	}
 	b, err := json.Marshal(doc)
@@ -367,7 +278,6 @@ func emitSchema(out io.Writer, acc *schemaguess.Accumulator, cfg GuesschemaConfi
 	return nil
 }
 
-// stripXVendorKeys removes JSON object properties whose names start with "x-" (vendor extensions), recursively.
 func stripXVendorKeys(v any) {
 	switch t := v.(type) {
 	case map[string]any:
@@ -386,33 +296,4 @@ func stripXVendorKeys(v any) {
 	default:
 		return
 	}
-}
-
-// ValidateGuesschemaFlags checks CLI-derived durations and threshold.
-func ValidateGuesschemaFlags(readWindow, every time.Duration, variantT float64, once, periodic bool) error {
-	if once && periodic {
-		return errors.New("cannot set both --once and --every")
-	}
-	if readWindow < 0 || every < 0 {
-		return errors.New("durations must be non-negative")
-	}
-	if readWindow > 0 && readWindow < time.Millisecond {
-		return errors.New("--read-window must be positive")
-	}
-	if periodic {
-		effective := readWindow
-		if effective == 0 {
-			effective = defaultReadWindow
-		}
-		if every < defaultReadWindow {
-			return errors.New("--every must be at least 1s when using default --read-window")
-		}
-		if effective > every {
-			return errors.New("effective read-window must be <= --every")
-		}
-	}
-	if variantT <= 0 || variantT >= 1 {
-		return errors.New("--variant-threshold must satisfy 0 < T < 1")
-	}
-	return nil
 }

@@ -34,7 +34,7 @@ func TestRandomExecutableRegression(t *testing.T) {
 	for i := range regressionCases {
 		mode := caseMode(rng.Intn(3))
 		input := makeRandomJSONL(rng, mode)
-		res := blackbox.RunBinary(bin, []string{"--once", "--read-window", "5s"}, input)
+		res := blackbox.RunBinary(bin, []string{"--read-window", "5s"}, input)
 
 		expectSuccess := mode != modeFatalOversizeRow
 		if expectSuccess {

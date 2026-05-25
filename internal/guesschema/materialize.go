@@ -1,4 +1,4 @@
-package schemaguess
+package guesschema
 
 import (
 	"sort"
@@ -8,7 +8,7 @@ import (
 
 // BuildSchema returns a JSON Schema 2020-12 root document map (encoding/json compatible).
 func BuildSchema(acc *Accumulator, variantThreshold float64, generatedAt time.Time) map[string]any {
-	lt := acc.LinesTotal()
+	lt := acc.linesTotal()
 	root := map[string]any{
 		"$schema":                         "https://json-schema.org/draft/2020-12/schema",
 		"x-guesschema-generated-at":       generatedAt.UTC().Format(time.RFC3339Nano),
@@ -24,7 +24,6 @@ func BuildSchema(acc *Accumulator, variantThreshold float64, generatedAt time.Ti
 func materializeAt(acc *Accumulator, ptr string, threshold float64, linesTotal int) map[string]any {
 	variants := concreteVariants(acc, ptr)
 	if len(variants) == 0 {
-		// no observations at this node (should be rare)
 		return map[string]any{"type": "object"}
 	}
 	if useOneOf(variants, acc, linesTotal, threshold) {
@@ -34,14 +33,14 @@ func materializeAt(acc *Accumulator, ptr string, threshold float64, linesTotal i
 	return singleBranchSchema(acc, ptr, w, linesTotal, threshold)
 }
 
-func concreteVariants(acc *Accumulator, ptr string) []VariantKey {
-	keys := acc.VariantsAt(ptr)
-	var out []VariantKey
+func concreteVariants(acc *Accumulator, ptr string) []variantKey {
+	keys := acc.variantsAt(ptr)
+	var out []variantKey
 	for _, k := range keys {
-		if k.Type == TypeUndefined {
+		if k.Type == typeUndefined {
 			continue
 		}
-		if acc.Variants[k].LinesWith == 0 {
+		if acc.variants[k].LinesWith == 0 {
 			continue
 		}
 		out = append(out, k)
@@ -49,14 +48,10 @@ func concreteVariants(acc *Accumulator, ptr string) []VariantKey {
 	return out
 }
 
-// concreteLinesAtPath sums lines_with for non-undefined variants at path (one concrete
-// observation per line). For Strategy A (oneOf), branches are disjoint by line: the sum
-// is total lines where the key was present with any of those types — use for required
-// when sum == linesTotal even though each branch’s own likelihood may be below 1.
 func concreteLinesAtPath(acc *Accumulator, path string) int {
 	n := 0
-	for k, st := range acc.Variants {
-		if k.Path != path || k.Type == TypeUndefined {
+	for k, st := range acc.variants {
+		if k.Path != path || k.Type == typeUndefined {
 			continue
 		}
 		n += st.LinesWith
@@ -64,8 +59,6 @@ func concreteLinesAtPath(acc *Accumulator, path string) int {
 	return n
 }
 
-// propertyLikelihoodOne is true iff the property was present on every successful line:
-// concreteLinesAtPath == linesTotal (combined oneOf branches count as full coverage).
 func propertyLikelihoodOne(acc *Accumulator, path string, linesTotal int) bool {
 	if linesTotal <= 0 {
 		return false
@@ -73,34 +66,34 @@ func propertyLikelihoodOne(acc *Accumulator, path string, linesTotal int) bool {
 	return concreteLinesAtPath(acc, path) == linesTotal
 }
 
-func useOneOf(keys []VariantKey, acc *Accumulator, linesTotal int, threshold float64) bool {
+func useOneOf(keys []variantKey, acc *Accumulator, linesTotal int, threshold float64) bool {
 	if len(keys) <= 1 {
 		return false
 	}
 	for _, k := range keys {
-		lw := acc.Variants[k].LinesWith
-		if !(Likelihood(lw, linesTotal) > threshold) {
+		st := acc.variants[k]
+		if !(st.likelihood(linesTotal) > threshold) {
 			return false
 		}
 	}
 	return true
 }
 
-func pickWinner(keys []VariantKey, acc *Accumulator, linesTotal int) VariantKey {
-	var best VariantKey
+func pickWinner(keys []variantKey, acc *Accumulator, linesTotal int) variantKey {
+	var best variantKey
 	bestScore := -1
 	bestL := -1.0
 	bestLex := ""
 	first := true
 	for _, k := range keys {
-		lw := acc.Variants[k].LinesWith
-		lik := Likelihood(lw, linesTotal)
+		st := acc.variants[k]
+		lik := st.likelihood(linesTotal)
 		lex := k.Type + "\x00" + k.Hint
-		if first || lw > bestScore ||
-			(lw == bestScore && lik > bestL) ||
-			(lw == bestScore && lik == bestL && lex < bestLex) {
+		if first || st.LinesWith > bestScore ||
+			(st.LinesWith == bestScore && lik > bestL) ||
+			(st.LinesWith == bestScore && lik == bestL && lex < bestLex) {
 			best = k
-			bestScore = lw
+			bestScore = st.LinesWith
 			bestL = lik
 			bestLex = lex
 			first = false
@@ -109,35 +102,35 @@ func pickWinner(keys []VariantKey, acc *Accumulator, linesTotal int) VariantKey 
 	return best
 }
 
-func statsObject(linesWith, linesTotal int) map[string]any {
+func statsObject(st *variantStats, linesTotal int) map[string]any {
 	return map[string]any{
-		"x-guesschema-lines-with":  linesWith,
+		"x-guesschema-lines-with":  st.LinesWith,
 		"x-guesschema-lines-total": linesTotal,
-		"x-guesschema-likelihood":  Likelihood(linesWith, linesTotal),
+		"x-guesschema-likelihood":  st.likelihood(linesTotal),
 	}
 }
 
-func mergeStats(base map[string]any, linesWith, linesTotal int) {
-	for k, v := range statsObject(linesWith, linesTotal) {
+func mergeStats(base map[string]any, st *variantStats, linesTotal int) {
+	for k, v := range statsObject(st, linesTotal) {
 		base[k] = v
 	}
 }
 
-func singleBranchSchema(acc *Accumulator, ptr string, k VariantKey, linesTotal int, threshold float64) map[string]any {
-	lw := acc.Variants[k].LinesWith
+func singleBranchSchema(acc *Accumulator, ptr string, k variantKey, linesTotal int, threshold float64) map[string]any {
+	st := acc.variants[k]
 	switch k.Type {
-	case TypeObject:
-		return objectSchema(acc, ptr, linesTotal, threshold, lw)
-	case TypeArray:
-		return arraySchema(acc, ptr, linesTotal, threshold, lw)
+	case typeObject:
+		return objectSchema(acc, ptr, linesTotal, threshold, st)
+	case typeArray:
+		return arraySchema(acc, ptr, linesTotal, threshold, st)
 	default:
 		m := leafTypeMap(k)
-		mergeStats(m, lw, linesTotal)
+		mergeStats(m, st, linesTotal)
 		return m
 	}
 }
 
-func oneOfSchema(acc *Accumulator, ptr string, keys []VariantKey, linesTotal int, threshold float64) map[string]any {
+func oneOfSchema(acc *Accumulator, ptr string, keys []variantKey, linesTotal int, threshold float64) map[string]any {
 	sort.Slice(keys, func(i, j int) bool {
 		ki, kj := keys[i], keys[j]
 		if ki.Type != kj.Type {
@@ -147,35 +140,35 @@ func oneOfSchema(acc *Accumulator, ptr string, keys []VariantKey, linesTotal int
 	})
 	branches := make([]any, 0, len(keys))
 	for _, k := range keys {
-		lw := acc.Variants[k].LinesWith
+		st := acc.variants[k]
 		var br map[string]any
 		switch k.Type {
-		case TypeObject:
-			br = objectSchema(acc, ptr, linesTotal, threshold, lw)
-		case TypeArray:
-			br = arraySchema(acc, ptr, linesTotal, threshold, lw)
+		case typeObject:
+			br = objectSchema(acc, ptr, linesTotal, threshold, st)
+		case typeArray:
+			br = arraySchema(acc, ptr, linesTotal, threshold, st)
 		default:
 			br = leafTypeMap(k)
-			mergeStats(br, lw, linesTotal)
+			mergeStats(br, st, linesTotal)
 		}
 		branches = append(branches, br)
 	}
 	return map[string]any{"oneOf": branches}
 }
 
-func leafTypeMap(k VariantKey) map[string]any {
+func leafTypeMap(k variantKey) map[string]any {
 	m := map[string]any{"type": k.Type}
-	if k.Type == TypeString && k.Hint != "" {
+	if k.Type == typeString && k.Hint != "" {
 		m["format"] = k.Hint
 	}
 	return m
 }
 
-func objectSchema(acc *Accumulator, ptr string, linesTotal int, threshold float64, objectLinesWith int) map[string]any {
+func objectSchema(acc *Accumulator, ptr string, linesTotal int, threshold float64, objectSt *variantStats) map[string]any {
 	props := make(map[string]any)
 	required := make([]string, 0)
 
-	childNames := directChildKeys(ptr, acc.AllPaths())
+	childNames := directChildKeys(ptr, acc.allPaths())
 	var sorted []string
 	for n := range childNames {
 		sorted = append(sorted, n)
@@ -183,11 +176,9 @@ func objectSchema(acc *Accumulator, ptr string, linesTotal int, threshold float6
 	sort.Strings(sorted)
 
 	for _, name := range sorted {
-		cp := JoinPointer(ptr, name)
+		cp := joinPointer(ptr, name)
 		sub := materializeAt(acc, cp, threshold, linesTotal)
 		props[name] = sub
-		// JSON Schema "required": only keys observed on every successful line (combined
-		// concrete variants → likelihood of presence == 1 vs lines_total).
 		if propertyLikelihoodOne(acc, cp, linesTotal) {
 			required = append(required, name)
 		}
@@ -202,21 +193,21 @@ func objectSchema(acc *Accumulator, ptr string, linesTotal int, threshold float6
 		sort.Strings(required)
 		out["required"] = required
 	}
-	mergeStats(out, objectLinesWith, linesTotal)
+	mergeStats(out, objectSt, linesTotal)
 	return out
 }
 
-func arraySchema(acc *Accumulator, ptr string, linesTotal int, threshold float64, arrayLinesWith int) map[string]any {
-	indices := arrayIndices(ptr, acc.AllPaths())
+func arraySchema(acc *Accumulator, ptr string, linesTotal int, threshold float64, arraySt *variantStats) map[string]any {
+	indices := arrayIndices(ptr, acc.allPaths())
 	var itemsSchema map[string]any
 	if len(indices) == 0 {
 		itemsSchema = map[string]any{"type": "object"}
 	} else if len(indices) == 1 {
-		itemsSchema = materializeAt(acc, JoinPointer(ptr, indices[0]), threshold, linesTotal)
+		itemsSchema = materializeAt(acc, joinPointer(ptr, indices[0]), threshold, linesTotal)
 	} else {
 		branches := make([]any, 0, len(indices))
 		for _, ix := range indices {
-			branches = append(branches, materializeAt(acc, JoinPointer(ptr, ix), threshold, linesTotal))
+			branches = append(branches, materializeAt(acc, joinPointer(ptr, ix), threshold, linesTotal))
 		}
 		itemsSchema = map[string]any{"oneOf": branches}
 	}
@@ -224,15 +215,15 @@ func arraySchema(acc *Accumulator, ptr string, linesTotal int, threshold float64
 		"type":  "array",
 		"items": itemsSchema,
 	}
-	mergeStats(out, arrayLinesWith, linesTotal)
+	mergeStats(out, arraySt, linesTotal)
 	return out
 }
 
 func directChildKeys(ptr string, allPaths []string) map[string]struct{} {
-	parentSegs := SplitPointer(ptr)
+	parentSegs := splitPointer(ptr)
 	out := make(map[string]struct{})
 	for _, p := range allPaths {
-		segs := SplitPointer(p)
+		segs := splitPointer(p)
 		if len(segs) != len(parentSegs)+1 {
 			continue
 		}
@@ -257,10 +248,10 @@ func hasPrefixSegs(full, prefix []string) bool {
 }
 
 func arrayIndices(ptr string, allPaths []string) []string {
-	parentSegs := SplitPointer(ptr)
+	parentSegs := splitPointer(ptr)
 	seen := make(map[string]struct{})
 	for _, p := range allPaths {
-		segs := SplitPointer(p)
+		segs := splitPointer(p)
 		if len(segs) != len(parentSegs)+1 {
 			continue
 		}

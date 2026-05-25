@@ -12,23 +12,23 @@ import (
 	"github.com/urfave/cli/v3"
 
 	"github.com/Olian04/guesschema/cmd/guesschema/version"
-	"github.com/Olian04/guesschema/internal/app"
+	ig "github.com/Olian04/guesschema/internal/guesschema"
 )
 
 func main() {
 	vi := version.Info()
+	log := setupLogging(false)
 
 	cli.VersionPrinter = func(cmd *cli.Command) {
 		_, err := fmt.Fprintf(cmd.Root().Writer, "%s version %s\nrevision %s\nbuild_time %s\n",
 			cmd.Name, vi.Version, vi.Revision, vi.BuildTime)
 		if err != nil {
-			slog.Error("write version", "error", err.Error())
+			log.Error("write version", "error", err.Error())
 		}
 	}
 
 	var (
 		readWindow       time.Duration
-		every            time.Duration
 		variantThreshold float64
 	)
 	root := &cli.Command{
@@ -36,18 +36,9 @@ func main() {
 		Usage:   "Read JSON Lines from stdin, write guessed JSON Schema (2020-12) to stdout",
 		Version: vi.Version,
 		Flags: []cli.Flag{
-			&cli.BoolFlag{
-				Name:  "once",
-				Usage: "Single emit after read window (or EOF); default when --every is not set",
-			},
-			&cli.DurationFlag{
-				Name:        "every",
-				Usage:       "Emit repeatedly with this period (ticker + spacing between window starts); mutually exclusive with --once",
-				Destination: &every,
-			},
 			&cli.DurationFlag{
 				Name:        "read-window",
-				Usage:       "Max wall time to read stdin per window (default 1s if omitted)",
+				Usage:       "Max wall time to read stdin per window (default 1s)",
 				Destination: &readWindow,
 			},
 			&cli.FloatFlag{
@@ -66,33 +57,35 @@ func main() {
 			},
 			&cli.BoolFlag{
 				Name:  "start-window-on-next-message",
-				Usage: "Start each read-window only after first received JSONL line",
+				Usage: "Start read-window only after first received JSONL line",
 			},
 		},
 		Action: func(ctx context.Context, c *cli.Command) error {
-			debug := c.Bool("debug")
-			setupLogging(debug)
+			log = setupLogging(c.Bool("debug"))
 
-			if c.IsSet("every") && every <= 0 {
-				return fmt.Errorf("--every must be positive")
-			}
-			periodic := c.IsSet("every") && every > 0
-			if periodic && c.Bool("once") {
-				return fmt.Errorf("cannot use --once with --every")
-			}
-			if err := app.ValidateGuesschemaFlags(readWindow, every, variantThreshold, c.Bool("once"), periodic); err != nil {
+			if err := validateFlags(readWindow, variantThreshold); err != nil {
 				return err
 			}
 
-			cfg := app.GuesschemaConfig{
-				ReadWindow:       readWindow,
-				Every:            every,
-				VariantThreshold: variantThreshold,
-				NoExtra:          c.Bool("no-extra"),
-				StartOnNextMsg:   c.Bool("start-window-on-next-message"),
-				Debug:            debug,
+			opts := []ig.Option{ig.WithLogger(log)}
+			if readWindow > 0 {
+				opts = append(opts, ig.WithReadWindow(readWindow))
 			}
-			return app.RunGuesschema(ctx, os.Stdin, os.Stdout, cfg)
+			if c.IsSet("variant-threshold") {
+				opts = append(opts, ig.WithVariantThreshold(variantThreshold))
+			}
+			if c.Bool("no-extra") {
+				opts = append(opts, ig.WithOmitVendorExtensions())
+			}
+			if c.Bool("start-window-on-next-message") {
+				opts = append(opts, ig.WithStartWindowOnNextMessage())
+			}
+
+			g, err := ig.New(opts...)
+			if err != nil {
+				return err
+			}
+			return g.Run(ctx, os.Stdin, os.Stdout)
 		},
 	}
 
@@ -100,17 +93,19 @@ func main() {
 	defer stop()
 
 	if err := root.Run(ctx, os.Args); err != nil {
-		slog.Error("guesschema exited with error", "error", err)
+		log.Error("guesschema exited with error", "error", err)
 		os.Exit(1)
 	}
 }
 
-func setupLogging(debug bool) {
+func setupLogging(debug bool) *slog.Logger {
 	var h slog.Handler
 	if debug {
 		h = slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug, AddSource: true})
 	} else {
 		h = slog.DiscardHandler
 	}
-	slog.SetDefault(slog.New(h))
+	log := slog.New(h)
+	slog.SetDefault(log)
+	return log
 }

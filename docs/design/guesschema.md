@@ -10,20 +10,10 @@ Non-goals: validating that upstream data always matches the guess; Kafka/HTTP br
 
 | Flag | Default | Notes |
 | --- | --- | --- |
-| `--read-window` | **1s** if omitted | Max wall time reading stdin per window. |
-| `--once` | implicit when no `--every` | Single emit then exit. |
-| `--every` | off | Periodic NDJSON emits; **`every` ≥ read-window** with defaults. |
+| `--read-window` | **1s** | Max wall time reading stdin; single schema emit per run. |
 | `--variant-threshold` | **0.1** | Same path: `oneOf` only if **every** variant has **likelihood > T**. |
 | `--no-extra` | off | Strip object keys starting with **`x-`** (vendor extensions) from stdout JSON. |
 | `--debug` | off | stderr only; no `-d` (avoids clashing with `-v` / version). |
-
-## Scheduling (`--every`)
-
-- **Ticker** with period **`every`**.
-- **`lastWindowStarted`**: set when a read window **starts** (including the first, immediate cycle).
-- **Busy:** from read start through emit, stdout flush, accumulator reset.
-- On tick: if busy → no-op; else if **`now - lastWindowStarted >= every`** → start next window and refresh **`lastWindowStarted`**.
-- **Not** modeled as “sleep **`every`** after each cycle completes” (that would add roughly **`read-window`** to spacing between starts).
 
 ## Accumulator model
 

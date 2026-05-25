@@ -1,3 +1,5 @@
+// Package blackbox builds cmd/guesschema and exercises it as an external process
+// (same contract as a shell pipeline: echo JSONL | ./guesschema …).
 package blackbox
 
 import (

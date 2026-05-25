@@ -6,27 +6,38 @@ Go module **`github.com/Olian04/guesschema`** ([repo](https://github.com/Olian04
 
 | Path | Role |
 | --- | --- |
-| `cmd/guesschema` | CLI entry: urfave/cli v3, signal context, `app.RunGuesschema`. |
+| `cmd/guesschema` | CLI: urfave/cli v3, signals, flags → `internal/guesschema.New` + `Guesser.Run`. |
 | `cmd/guesschema/version` | `Version`, `Revision`, `BuildTime` for `-ldflags -X` and `--version`. |
-| `internal/app` | Stdin read loop, read-window timer, `--every` ticker scheduling, stdout emit + flush. |
-| `internal/domain/schemaguess` | Cross-line accumulator (RFC 6901 paths, missing-key rules), materialization (winner vs `oneOf` by `--variant-threshold`). |
-| `test/unit/...` | Unit tests beside mirrored paths under `test/unit/domain/...` and `test/unit/app/...`. |
+| `pkg/guesschema` | Public library: `New`, `Guesser`, `With*`, and domain (`Accumulator`, `BuildSchema`, …) → `internal/guesschema`. |
+| `internal/guesschema` | Orchestration (JSONL read, emit, `Guesser`) plus domain (accumulator, materialize, RFC 6901 pointers). |
+| `test/` | **All** tests: unit (`test/unit/...`) and blackbox (`test/blackbox/...`). No `*_test.go` under `cmd/`, `internal/`, or `pkg/`. |
+| `test/unit/pkg/guesschema/...` | Library contract: import `pkg/guesschema` only (`package guesschema_test`). |
+| `test/blackbox/...` | CLI contract: build `cmd/guesschema`, run via `exec` (shell-style); no imports of `pkg` or `internal`. |
+
+## Testing (core rule)
+
+**Every test file lives under `test/`.** Production trees (`cmd/`, `internal/`, `pkg/`) contain no tests.
+
+**`internal/guesschema` is not a test target.** Tests guard consumer contracts only:
+
+1. **Library** — `test/unit/pkg/guesschema/`: public `pkg/guesschema` API.
+2. **CLI** — `test/blackbox/`: compiled binary (JSONL I/O, flags, exit codes). Invalid flags are covered here, not in `cmd/`.
+
+If behavior is untestable through `pkg` or the CLI, extend the public API or CLI surface rather than adding tests under `internal/` or beside `cmd/`.
 
 ## Dependency direction
 
-`cmd/guesschema` → `internal/app` → `internal/domain/schemaguess`. Domain must not import `internal/app`.
+`cmd/guesschema` → `internal/guesschema` · `pkg/guesschema` → `internal/guesschema`. **`internal` must not import `pkg`.**
 
 ## Behavior summary
 
 - **`--no-extra`:** omit vendor extensions by stripping JSON object keys starting with **`x-`** before stdout (recursive).
-- **`--once` (default):** read at most **`--read-window`** (default **1s**) from process start, emit once, exit; EOF before budget → emit on EOF.
-- **`--every`:** `time.Ticker` period **`every`**; **`lastWindowStarted`** updated when a read window **starts**; on each tick, if not busy and **`now - lastWindowStarted >= every`**, start the next window. While read→emit→reset is in progress, ticks are no-ops. First cycle starts immediately.
-- **`effective read-window <= every`** when periodic (defaults imply **`every` ≥ 1s**).
-- **`--once` + `--every`** → error.
+- **Single emit:** read at most **`--read-window`** (default **1s**), emit one schema, exit; EOF before budget → emit on EOF.
+- **Library `New`:** defaults only in `defaultConfig()`; `validate()` rejects invalid overrides; CLI flag checks live in `cmd/guesschema/flags.go`.
 
 ## Errors and logging
 
-Use `%w` when wrapping errors in `cmd` / `internal/app`. Default logger discarded unless **`--debug`** (stderr text handler).
+Use `%w` when wrapping errors in `cmd` / `internal/guesschema`. CLI **`--debug`** builds a stderr slog logger passed via **`WithLogger`**; library default is discard. **`Guesser`** is safe for concurrent **`Run`**; per-run state stays local to each call.
 
 ## Commands (`make`)
 

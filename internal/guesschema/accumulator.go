@@ -1,4 +1,4 @@
-package schemaguess
+package guesschema
 
 import (
 	"encoding/json"
@@ -11,23 +11,23 @@ import (
 type Accumulator struct {
 	SuccessfulLines int
 	InvalidJSON     int
-	Variants        map[VariantKey]*VariantStats
-	knownKeys       map[string]map[string]struct{} // pointer P -> child keys ever seen
+	variants        map[variantKey]*variantStats
+	knownKeys       map[string]map[string]struct{}
 }
 
 // NewAccumulator returns an empty accumulator.
 func NewAccumulator() *Accumulator {
 	return &Accumulator{
-		Variants:  make(map[VariantKey]*VariantStats),
+		variants:  make(map[variantKey]*variantStats),
 		knownKeys: make(map[string]map[string]struct{}),
 	}
 }
 
-func (a *Accumulator) stats(key VariantKey) *VariantStats {
-	s := a.Variants[key]
+func (a *Accumulator) stats(key variantKey) *variantStats {
+	s := a.variants[key]
 	if s == nil {
-		s = &VariantStats{}
-		a.Variants[key] = s
+		s = &variantStats{}
+		a.variants[key] = s
 	}
 	return s
 }
@@ -36,7 +36,7 @@ func (a *Accumulator) stats(key VariantKey) *VariantStats {
 func (a *Accumulator) Reset() {
 	a.SuccessfulLines = 0
 	a.InvalidJSON = 0
-	clear(a.Variants)
+	clear(a.variants)
 	clear(a.knownKeys)
 }
 
@@ -60,7 +60,6 @@ func (a *Accumulator) ObserveLine(line []byte) error {
 }
 
 func trimLine(b []byte) []byte {
-	// trim ASCII space only; JSONL often has no trailing newline in buffer
 	for len(b) > 0 && (b[0] == ' ' || b[0] == '\t') {
 		b = b[1:]
 	}
@@ -82,49 +81,47 @@ func (a *Accumulator) ensureKnownKeys(p string) map[string]struct{} {
 func (a *Accumulator) walkValue(ptr string, v any, linesCompletedBeforeCurrent int) error {
 	switch val := v.(type) {
 	case nil:
-		a.stats(VariantKey{Path: ptr, Type: TypeNull, Hint: ""}).LinesWith++
+		a.stats(variantKey{Path: ptr, Type: typeNull, Hint: ""}).LinesWith++
 		return nil
 	case bool:
-		a.stats(VariantKey{Path: ptr, Type: TypeBoolean, Hint: ""}).LinesWith++
+		a.stats(variantKey{Path: ptr, Type: typeBoolean, Hint: ""}).LinesWith++
 		return nil
 	case float64:
 		if math.IsInf(val, 0) || math.IsNaN(val) {
 			return fmt.Errorf("non-finite number at %q", ptr)
 		}
-		a.stats(VariantKey{Path: ptr, Type: TypeNumber, Hint: ""}).LinesWith++
+		a.stats(variantKey{Path: ptr, Type: typeNumber, Hint: ""}).LinesWith++
 		return nil
 	case string:
 		hint := stringHint(val)
-		a.stats(VariantKey{Path: ptr, Type: TypeString, Hint: hint}).LinesWith++
+		a.stats(variantKey{Path: ptr, Type: typeString, Hint: hint}).LinesWith++
 		return nil
 	case []any:
-		a.stats(VariantKey{Path: ptr, Type: TypeArray, Hint: ""}).LinesWith++
+		a.stats(variantKey{Path: ptr, Type: typeArray, Hint: ""}).LinesWith++
 		for i, el := range val {
-			child := JoinPointer(ptr, fmtInt(i))
+			child := joinPointer(ptr, fmtInt(i))
 			if err := a.walkValue(child, el, linesCompletedBeforeCurrent); err != nil {
 				return err
 			}
 		}
 		return nil
 	case map[string]any:
-		a.stats(VariantKey{Path: ptr, Type: TypeObject, Hint: ""}).LinesWith++
+		a.stats(variantKey{Path: ptr, Type: typeObject, Hint: ""}).LinesWith++
 		known := a.ensureKnownKeys(ptr)
 		present := make(map[string]struct{}, len(val))
 		for k := range val {
 			present[k] = struct{}{}
 		}
-		// 1. known \ present -> undefined +1 each
 		for k := range known {
 			if _, ok := present[k]; !ok {
-				p := JoinPointer(ptr, k)
-				a.stats(VariantKey{Path: p, Type: TypeUndefined, Hint: ""}).LinesWith++
+				p := joinPointer(ptr, k)
+				a.stats(variantKey{Path: p, Type: typeUndefined, Hint: ""}).LinesWith++
 			}
 		}
-		// 2 & 3. each present key: first sight vs known
 		for k, childVal := range val {
-			p := JoinPointer(ptr, k)
+			p := joinPointer(ptr, k)
 			if _, wasKnown := known[k]; !wasKnown {
-				a.stats(VariantKey{Path: p, Type: TypeUndefined, Hint: ""}).LinesWith += linesCompletedBeforeCurrent
+				a.stats(variantKey{Path: p, Type: typeUndefined, Hint: ""}).LinesWith += linesCompletedBeforeCurrent
 				if err := a.walkValue(p, childVal, linesCompletedBeforeCurrent); err != nil {
 					return err
 				}
@@ -142,13 +139,11 @@ func (a *Accumulator) walkValue(ptr string, v any, linesCompletedBeforeCurrent i
 }
 
 func fmtInt(i int) string {
-	// small fast path
 	return fmt.Sprintf("%d", i)
 }
 
 func stringHint(s string) string {
 	if len(s) > 0 && (s[0] == '2' || s[0] == '1') && len(s) >= 10 {
-		// very light RFC3339-ish signal for format: date-time
 		for _, r := range s {
 			if r == 'T' || r == 't' {
 				return "date-time"
@@ -158,24 +153,14 @@ func stringHint(s string) string {
 	return ""
 }
 
-// LinesTotal returns successful line count for stats siblings.
-func (a *Accumulator) LinesTotal() int {
+func (a *Accumulator) linesTotal() int {
 	return a.SuccessfulLines
 }
 
-// Likelihood returns lines_with / lines_total for the window.
-func Likelihood(linesWith, linesTotal int) float64 {
-	if linesTotal <= 0 {
-		return 0
-	}
-	return float64(linesWith) / float64(linesTotal)
-}
-
-// VariantsAt groups variant keys that share the same JSON Pointer path (different type/hint).
-func (a *Accumulator) VariantsAt(path string) []VariantKey {
-	var keys []VariantKey
-	for k := range a.Variants {
-		if k.Path == path && a.Variants[k].LinesWith > 0 {
+func (a *Accumulator) variantsAt(path string) []variantKey {
+	var keys []variantKey
+	for k := range a.variants {
+		if k.Path == path && a.variants[k].LinesWith > 0 {
 			keys = append(keys, k)
 		}
 	}
@@ -188,10 +173,9 @@ func (a *Accumulator) VariantsAt(path string) []VariantKey {
 	return keys
 }
 
-// AllPaths returns sorted unique paths that have any non-zero variant.
-func (a *Accumulator) AllPaths() []string {
+func (a *Accumulator) allPaths() []string {
 	seen := make(map[string]struct{})
-	for k, st := range a.Variants {
+	for k, st := range a.variants {
 		if st.LinesWith > 0 {
 			seen[k.Path] = struct{}{}
 		}
