@@ -7,10 +7,10 @@ import (
 
 // materializeIndex is built once per BuildSchema from the variant map.
 type materializeIndex struct {
-	allPaths       []string
-	variantsByPath map[string][]variantKey
-	linesAtPath    map[string]int
-	children       map[string][]string
+	allPaths           []string
+	variantsByPath     map[string][]variantKey
+	linesAtPath        map[string]int
+	children           map[string][]string
 	arrayIndicesByPath map[string][]string
 }
 
@@ -96,10 +96,10 @@ func newMaterializeIndex(acc *Accumulator) *materializeIndex {
 	}
 
 	return &materializeIndex{
-		allPaths:       allPaths,
-		variantsByPath: byPath,
-		linesAtPath:    linesAt,
-		children:       children,
+		allPaths:           allPaths,
+		variantsByPath:     byPath,
+		linesAtPath:        linesAt,
+		children:           children,
 		arrayIndicesByPath: arrayIx,
 	}
 }

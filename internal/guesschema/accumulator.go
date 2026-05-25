@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-	"sort"
 
 	"github.com/Olian04/guesschema/internal/hints"
 )
@@ -142,35 +141,4 @@ func (a *Accumulator) walkValue(ptr, propKey string, v any, linesCompletedBefore
 
 func (a *Accumulator) linesTotal() int {
 	return a.successfulLines
-}
-
-func (a *Accumulator) variantsAt(path string) []variantKey {
-	var keys []variantKey
-	for k := range a.variants {
-		if k.Path == path && a.variants[k].LinesWith > 0 {
-			keys = append(keys, k)
-		}
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		if keys[i].Type != keys[j].Type {
-			return keys[i].Type < keys[j].Type
-		}
-		return keys[i].Hint < keys[j].Hint
-	})
-	return keys
-}
-
-func (a *Accumulator) allPaths() []string {
-	seen := make(map[string]struct{})
-	for k, st := range a.variants {
-		if st.LinesWith > 0 {
-			seen[k.Path] = struct{}{}
-		}
-	}
-	out := make([]string, 0, len(seen))
-	for p := range seen {
-		out = append(out, p)
-	}
-	sort.Strings(out)
-	return out
 }
