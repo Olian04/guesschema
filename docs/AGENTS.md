@@ -10,6 +10,7 @@ Go module **`github.com/Olian04/guesschema`** ([repo](https://github.com/Olian04
 | `cmd/guesschema/version` | `Version`, `Revision`, `BuildTime` for `-ldflags -X` and `--version`. |
 | `pkg/guesschema` | Public library: `New`, `Guesser`, `With*`, and domain (`Accumulator`, `BuildSchema`, …) → `internal/guesschema`. |
 | `internal/guesschema` | Orchestration (JSONL read, emit, `Guesser`) plus domain (accumulator, materialize, RFC 6901 pointers). |
+| `internal/hints` | Property key + value heuristics → JSON Schema `format` annotations (not tested directly). |
 | `test/` | **All** tests: unit (`test/unit/...`) and blackbox (`test/blackbox/...`). No `*_test.go` under `cmd/`, `internal/`, or `pkg/`. |
 | `test/unit/pkg/guesschema/...` | Library contract: import `pkg/guesschema` only (`package guesschema_test`). |
 | `test/blackbox/...` | CLI contract: build `cmd/guesschema`, run via `exec` (shell-style); no imports of `pkg` or `internal`. |
@@ -27,7 +28,7 @@ If behavior is untestable through `pkg` or the CLI, extend the public API or CLI
 
 ## Dependency direction
 
-`cmd/guesschema` → `internal/guesschema` · `pkg/guesschema` → `internal/guesschema`. **`internal` must not import `pkg`.**
+`cmd/guesschema` → `internal/guesschema` · `pkg/guesschema` → `internal/guesschema` · `internal/guesschema` → `internal/hints`. **`internal` must not import `pkg`.**
 
 ## Behavior summary
 

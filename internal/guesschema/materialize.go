@@ -12,7 +12,7 @@ func BuildSchema(acc *Accumulator, variantThreshold float64, generatedAt time.Ti
 	root := map[string]any{
 		"$schema":                         "https://json-schema.org/draft/2020-12/schema",
 		"x-guesschema-generated-at":       generatedAt.UTC().Format(time.RFC3339Nano),
-		"x-guesschema-invalid-json-lines": acc.InvalidJSON,
+		"x-guesschema-invalid-json-lines": acc.invalidJSON,
 	}
 	body := materializeAt(acc, "", variantThreshold, lt)
 	for k, v := range body {
@@ -158,8 +158,14 @@ func oneOfSchema(acc *Accumulator, ptr string, keys []variantKey, linesTotal int
 
 func leafTypeMap(k variantKey) map[string]any {
 	m := map[string]any{"type": k.Type}
-	if k.Type == typeString && k.Hint != "" {
+	if k.Hint == "" {
+		return m
+	}
+	switch k.Type {
+	case typeString, typeNumber:
 		m["format"] = k.Hint
+	default:
+		m["x-guesschema-hint"] = k.Hint
 	}
 	return m
 }

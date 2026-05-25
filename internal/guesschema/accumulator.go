@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"math"
 	"sort"
+
+	"github.com/Olian04/guesschema/internal/hints"
 )
 
 // Accumulator holds cross-line schema guess state for one read window.
 type Accumulator struct {
-	SuccessfulLines int
-	InvalidJSON     int
+	successfulLines int
+	invalidJSON     int
 	variants        map[variantKey]*variantStats
 	knownKeys       map[string]map[string]struct{}
 }
@@ -34,8 +36,8 @@ func (a *Accumulator) stats(key variantKey) *variantStats {
 
 // Reset clears all state for a new window.
 func (a *Accumulator) Reset() {
-	a.SuccessfulLines = 0
-	a.InvalidJSON = 0
+	a.successfulLines = 0
+	a.invalidJSON = 0
 	clear(a.variants)
 	clear(a.knownKeys)
 }
@@ -48,14 +50,14 @@ func (a *Accumulator) ObserveLine(line []byte) error {
 	}
 	var v any
 	if err := json.Unmarshal(trim, &v); err != nil {
-		a.InvalidJSON++
+		a.invalidJSON++
 		return nil
 	}
-	linesBefore := a.SuccessfulLines
-	if err := a.walkValue("", v, linesBefore); err != nil {
+	linesBefore := a.successfulLines
+	if err := a.walkValue("", "", v, linesBefore); err != nil {
 		return err
 	}
-	a.SuccessfulLines++
+	a.successfulLines++
 	return nil
 }
 
@@ -78,35 +80,35 @@ func (a *Accumulator) ensureKnownKeys(p string) map[string]struct{} {
 	return m
 }
 
-func (a *Accumulator) walkValue(ptr string, v any, linesCompletedBeforeCurrent int) error {
+func (a *Accumulator) walkValue(ptr, propKey string, v any, linesCompletedBeforeCurrent int) error {
+	h := hints.For(propKey, v)
 	switch val := v.(type) {
 	case nil:
-		a.stats(variantKey{Path: ptr, Type: typeNull, Hint: ""}).LinesWith++
+		a.stats(variantKey{Path: ptr, Type: typeNull, Hint: h}).LinesWith++
 		return nil
 	case bool:
-		a.stats(variantKey{Path: ptr, Type: typeBoolean, Hint: ""}).LinesWith++
+		a.stats(variantKey{Path: ptr, Type: typeBoolean, Hint: h}).LinesWith++
 		return nil
 	case float64:
 		if math.IsInf(val, 0) || math.IsNaN(val) {
 			return fmt.Errorf("non-finite number at %q", ptr)
 		}
-		a.stats(variantKey{Path: ptr, Type: typeNumber, Hint: ""}).LinesWith++
+		a.stats(variantKey{Path: ptr, Type: typeNumber, Hint: h}).LinesWith++
 		return nil
 	case string:
-		hint := stringHint(val)
-		a.stats(variantKey{Path: ptr, Type: typeString, Hint: hint}).LinesWith++
+		a.stats(variantKey{Path: ptr, Type: typeString, Hint: h}).LinesWith++
 		return nil
 	case []any:
-		a.stats(variantKey{Path: ptr, Type: typeArray, Hint: ""}).LinesWith++
+		a.stats(variantKey{Path: ptr, Type: typeArray, Hint: h}).LinesWith++
 		for i, el := range val {
-			child := joinPointer(ptr, fmtInt(i))
-			if err := a.walkValue(child, el, linesCompletedBeforeCurrent); err != nil {
+			child := joinPointer(ptr, fmt.Sprintf("%d", i))
+			if err := a.walkValue(child, fmt.Sprintf("%d", i), el, linesCompletedBeforeCurrent); err != nil {
 				return err
 			}
 		}
 		return nil
 	case map[string]any:
-		a.stats(variantKey{Path: ptr, Type: typeObject, Hint: ""}).LinesWith++
+		a.stats(variantKey{Path: ptr, Type: typeObject, Hint: h}).LinesWith++
 		known := a.ensureKnownKeys(ptr)
 		present := make(map[string]struct{}, len(val))
 		for k := range val {
@@ -122,13 +124,13 @@ func (a *Accumulator) walkValue(ptr string, v any, linesCompletedBeforeCurrent i
 			p := joinPointer(ptr, k)
 			if _, wasKnown := known[k]; !wasKnown {
 				a.stats(variantKey{Path: p, Type: typeUndefined, Hint: ""}).LinesWith += linesCompletedBeforeCurrent
-				if err := a.walkValue(p, childVal, linesCompletedBeforeCurrent); err != nil {
+				if err := a.walkValue(p, k, childVal, linesCompletedBeforeCurrent); err != nil {
 					return err
 				}
 				known[k] = struct{}{}
 				continue
 			}
-			if err := a.walkValue(p, childVal, linesCompletedBeforeCurrent); err != nil {
+			if err := a.walkValue(p, k, childVal, linesCompletedBeforeCurrent); err != nil {
 				return err
 			}
 		}
@@ -138,23 +140,8 @@ func (a *Accumulator) walkValue(ptr string, v any, linesCompletedBeforeCurrent i
 	}
 }
 
-func fmtInt(i int) string {
-	return fmt.Sprintf("%d", i)
-}
-
-func stringHint(s string) string {
-	if len(s) > 0 && (s[0] == '2' || s[0] == '1') && len(s) >= 10 {
-		for _, r := range s {
-			if r == 'T' || r == 't' {
-				return "date-time"
-			}
-		}
-	}
-	return ""
-}
-
 func (a *Accumulator) linesTotal() int {
-	return a.SuccessfulLines
+	return a.successfulLines
 }
 
 func (a *Accumulator) variantsAt(path string) []variantKey {
