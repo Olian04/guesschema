@@ -28,19 +28,26 @@ func (g *Guesser) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 		pump := startLinePump(ctx, in)
 		eof, err = readPhaseFromPump(ctx, acc, g.cfg.readWindow, pump.lines, pump.errs, g.cfg.startOnNextMsg)
 	}
-	canceled := err != nil && errors.Is(err, context.Canceled)
-	if err != nil && !canceled {
+	readCanceled := err != nil && errors.Is(err, context.Canceled)
+	if err != nil && !readCanceled {
 		return err
 	}
-	emitErr := g.emitSchema(ctx, out, acc)
+	emitCtx := ctx
+	if readCanceled {
+		// Reading stopped because ctx was canceled; still materialize lines observed so far.
+		// WithoutCancel keeps deadlines but ignores cancel so emit is not aborted at buildSchema entry.
+		// materializeAt still checks the original ctx for prompt abort during a long materialize.
+		emitCtx = context.WithoutCancel(ctx)
+	}
+	emitErr := g.emitSchema(emitCtx, out, acc)
 	emitCanceled := emitErr != nil && errors.Is(emitErr, context.Canceled)
 	if emitErr != nil && !emitCanceled {
 		return emitErr
 	}
 	if emitCanceled {
-		canceled = true
+		readCanceled = true
 	}
-	if canceled {
+	if readCanceled {
 		g.cfg.logger.Debug("guesschema: interrupted, emitting partial schema")
 		return nil
 	}

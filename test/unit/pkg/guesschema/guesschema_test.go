@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -92,10 +93,16 @@ func TestGuesser_Run_cancelEmitsSchema(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var jsonl strings.Builder
-	for range 500 {
-		jsonl.WriteString(`{"a":1,"b":"x"}` + "\n")
-	}
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pr.Close() })
+	go func() {
+		defer pw.Close()
+		if _, err := pw.Write([]byte(`{"a":1,"b":"x"}` + "\n")); err != nil {
+			return
+		}
+		// Block so cancel always stops mid-read, not after draining input.
+		<-ctx.Done()
+	}()
 
 	g, err := guesschema.New(
 		guesschema.WithReadWindow(30*time.Second),
@@ -108,7 +115,7 @@ func TestGuesser_Run_cancelEmitsSchema(t *testing.T) {
 	var out bytes.Buffer
 	done := make(chan error, 1)
 	go func() {
-		done <- g.Run(ctx, strings.NewReader(jsonl.String()), &out)
+		done <- g.Run(ctx, pr, &out)
 	}()
 	time.Sleep(25 * time.Millisecond)
 	cancel()
