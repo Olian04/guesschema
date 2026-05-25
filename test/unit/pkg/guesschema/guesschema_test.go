@@ -87,6 +87,48 @@ func TestNew_invalidReadWindow(t *testing.T) {
 	}
 }
 
+func TestGuesser_Run_cancelEmitsSchema(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var jsonl strings.Builder
+	for range 500 {
+		jsonl.WriteString(`{"a":1,"b":"x"}` + "\n")
+	}
+
+	g, err := guesschema.New(
+		guesschema.WithReadWindow(30*time.Second),
+		guesschema.WithVariantThreshold(0.1),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- g.Run(ctx, strings.NewReader(jsonl.String()), &out)
+	}()
+	time.Sleep(25 * time.Millisecond)
+	cancel()
+
+	if err := <-done; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("unmarshal stdout: %v\n%s", err, out.String())
+	}
+	props, ok := doc["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties: %T", doc["properties"])
+	}
+	if _, ok := props["a"]; !ok {
+		t.Fatalf("expected property a in partial schema: %#v", props)
+	}
+}
+
 func TestGuesser_runConcurrent(t *testing.T) {
 	t.Parallel()
 	g, err := guesschema.New(

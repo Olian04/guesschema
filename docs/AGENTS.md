@@ -34,6 +34,8 @@ If behavior is untestable through `pkg` or the CLI, extend the public API or CLI
 
 - **`--no-extra`:** omit vendor extensions by stripping JSON object keys starting with **`x-`** before stdout (recursive).
 - **Single emit:** read at most **`--read-window`** (default **1s**), emit one schema, exit; EOF before budget → emit on EOF.
+- **Interrupt:** SIGINT/SIGTERM (or canceled **`Run` ctx**) stops reading and still emits one schema from lines observed so far; emit checks **`ctx`** during **`buildSchema`** so Ctrl+C during a long materialize can abort promptly; CLI exits 0 after successful emit.
+- **Materialize:** **`buildSchema`** builds a path index once per emit (avoids scanning all variants on every nested property).
 - **Library `New`:** defaults only in `defaultConfig()`; `validate()` rejects invalid overrides; CLI flag checks live in `cmd/guesschema/flags.go`.
 
 ## Errors and logging

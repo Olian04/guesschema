@@ -20,7 +20,7 @@ go install github.com/Olian04/guesschema/cmd/guesschema@latest
 
 ### Usage
 
-Reads JSONL until **`--read-window`** elapses (default **1s**) or **EOF**, then prints one schema object.
+Reads JSONL until **`--read-window`** elapses (default **1s**) or **EOF**, then prints one schema object. **Ctrl+C** stops reading or materialization and still prints the schema built so far.
 
 ```bash
 printf '%s\n' '{"id":1,"name":"a"}' '{"id":2,"name":"b"}' | guesschema

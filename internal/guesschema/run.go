@@ -14,25 +14,35 @@ import (
 
 const maxJSONLLineBytes = 16 << 20
 
-// Run reads JSONL from in, writes one JSON Schema 2020-12 document to out,
-// and returns ctx.Err() when ctx is canceled.
+// Run reads JSONL from in, writes one JSON Schema 2020-12 document to out.
+// If ctx is canceled (e.g. SIGINT), reading stops and the schema built so far is still written.
 func (g *Guesser) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	acc := NewAccumulator()
 	var (
 		eof bool
 		err error
 	)
-	if _, ok := probeReadDeadlineSupport(in); ok {
+	if _, isFile := in.(*os.File); isFile {
 		eof, err = readPhase(ctx, in, acc, g.cfg.readWindow)
 	} else {
 		pump := startLinePump(ctx, in)
 		eof, err = readPhaseFromPump(ctx, acc, g.cfg.readWindow, pump.lines, pump.errs, g.cfg.startOnNextMsg)
 	}
-	if err != nil {
+	canceled := err != nil && errors.Is(err, context.Canceled)
+	if err != nil && !canceled {
 		return err
 	}
-	if err := g.emitSchema(out, acc); err != nil {
-		return err
+	emitErr := g.emitSchema(ctx, out, acc)
+	emitCanceled := emitErr != nil && errors.Is(emitErr, context.Canceled)
+	if emitErr != nil && !emitCanceled {
+		return emitErr
+	}
+	if emitCanceled {
+		canceled = true
+	}
+	if canceled {
+		g.cfg.logger.Debug("guesschema: interrupted, emitting partial schema")
+		return nil
 	}
 	if !eof {
 		g.cfg.logger.Debug("guesschema: read window elapsed before EOF")
@@ -51,19 +61,6 @@ func isTimeout(err error) bool {
 	return errors.As(err, &ne) && ne.Timeout()
 }
 
-func probeReadDeadlineSupport(in io.Reader) (*os.File, bool) {
-	fin, isFile := in.(*os.File)
-	if !isFile {
-		return nil, false
-	}
-	if err := fin.SetReadDeadline(time.Now().Add(time.Millisecond)); err != nil {
-		_ = fin.SetReadDeadline(time.Time{})
-		return fin, false
-	}
-	_ = fin.SetReadDeadline(time.Time{})
-	return fin, true
-}
-
 type linePump struct {
 	lines <-chan []byte
 	errs  <-chan error
@@ -73,59 +70,156 @@ func startLinePump(ctx context.Context, in io.Reader) linePump {
 	lines := make(chan []byte, 16)
 	errs := make(chan error, 1)
 	br := bufio.NewReaderSize(in, 64*1024)
+	fin, isFile := in.(*os.File)
 	go func() {
 		defer close(lines)
 		defer close(errs)
-		for {
-			line, err := br.ReadBytes('\n')
-			if len(line) > maxJSONLLineBytes {
-				errs <- errors.New("jsonl line exceeds max size")
-				return
-			}
-			if len(line) > 0 {
-				select {
-				case lines <- trimCRLF(line):
-				case <-ctx.Done():
-					return
-				}
-			}
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					return
-				}
-				errs <- err
-				return
-			}
+		if isFile && fileReadDeadlineOK(fin) {
+			pumpFileWithDeadline(ctx, br, fin, lines, errs)
+			return
 		}
+		pumpReader(ctx, br, lines, errs)
 	}()
 	return linePump{lines: lines, errs: errs}
 }
 
+func pumpReader(ctx context.Context, br *bufio.Reader, lines chan<- []byte, errs chan<- error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		line, err := br.ReadBytes('\n')
+		if len(line) > maxJSONLLineBytes {
+			errs <- errors.New("jsonl line exceeds max size")
+			return
+		}
+		if len(line) > 0 {
+			select {
+			case lines <- trimCRLF(line):
+			case <-ctx.Done():
+				return
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			errs <- err
+			return
+		}
+	}
+}
+
+func pumpFileWithDeadline(ctx context.Context, br *bufio.Reader, fin *os.File, lines chan<- []byte, errs chan<- error) {
+	defer func() { _ = fin.SetReadDeadline(time.Time{}) }()
+	const slice = 100 * time.Millisecond
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		if err := fin.SetReadDeadline(time.Now().Add(slice)); err != nil {
+			errs <- err
+			return
+		}
+		line, err := br.ReadBytes('\n')
+		if len(line) > maxJSONLLineBytes {
+			errs <- errors.New("jsonl line exceeds max size")
+			return
+		}
+		if len(line) > 0 {
+			select {
+			case lines <- trimCRLF(line):
+			case <-ctx.Done():
+				return
+			}
+		}
+		if err != nil {
+			if isTimeout(err) {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+				continue
+			}
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			errs <- err
+			return
+		}
+	}
+}
+
+func fileReadDeadlineOK(fin *os.File) bool {
+	if err := fin.SetReadDeadline(time.Now().Add(time.Millisecond)); err != nil {
+		_ = fin.SetReadDeadline(time.Time{})
+		return false
+	}
+	_ = fin.SetReadDeadline(time.Time{})
+	return true
+}
+
 func readPhase(ctx context.Context, in io.Reader, acc *Accumulator, window time.Duration) (eof bool, err error) {
+	fin, ok := in.(*os.File)
+	if !ok {
+		return false, errors.New("readPhase requires *os.File")
+	}
 	deadEnd := time.Now().Add(window)
 	br := bufio.NewReaderSize(in, 64*1024)
-	fin, isFile := in.(*os.File)
-
-	readDeadlineOK := false
-	if isFile {
-		if err := fin.SetReadDeadline(time.Now().Add(time.Millisecond)); err == nil {
-			readDeadlineOK = true
-		}
-		_ = fin.SetReadDeadline(time.Time{})
-	}
-
-	if readDeadlineOK {
+	deadlineOK := fileReadDeadlineOK(fin)
+	if deadlineOK {
 		defer func() { _ = fin.SetReadDeadline(time.Time{}) }()
 		return readPhaseWithReadDeadline(ctx, br, fin, acc, deadEnd)
 	}
-	return readPhaseWithoutReadDeadline(ctx, br, acc, deadEnd)
+	return readPhaseBlocking(ctx, br, acc, deadEnd)
+}
+
+func readPhaseBlocking(ctx context.Context, br *bufio.Reader, acc *Accumulator, deadEnd time.Time) (eof bool, err error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return false, context.Canceled
+		default:
+		}
+		if !time.Now().Before(deadEnd) {
+			return false, nil
+		}
+
+		line, err := br.ReadBytes('\n')
+		if len(line) > maxJSONLLineBytes {
+			return false, errors.New("jsonl line exceeds max size")
+		}
+		line = trimCRLF(line)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				if len(line) > 0 {
+					if err2 := acc.ObserveLine(line); err2 != nil {
+						return false, err2
+					}
+				}
+				return true, nil
+			}
+			return false, err
+		}
+		if err := acc.ObserveLine(line); err != nil {
+			return false, err
+		}
+		if ctx.Err() != nil {
+			return false, context.Canceled
+		}
+	}
 }
 
 func readPhaseWithReadDeadline(ctx context.Context, br *bufio.Reader, fin *os.File, acc *Accumulator, deadEnd time.Time) (eof bool, err error) {
 	for {
 		select {
 		case <-ctx.Done():
-			return false, ctx.Err()
+			return false, context.Canceled
 		default:
 		}
 		if !time.Now().Before(deadEnd) {
@@ -141,6 +235,11 @@ func readPhaseWithReadDeadline(ctx context.Context, br *bufio.Reader, fin *os.Fi
 		}
 		if err := fin.SetReadDeadline(time.Now().Add(slice)); err != nil {
 			return false, err
+		}
+		select {
+		case <-ctx.Done():
+			return false, context.Canceled
+		default:
 		}
 
 		line, err := br.ReadBytes('\n')
@@ -173,38 +272,8 @@ func readPhaseWithReadDeadline(ctx context.Context, br *bufio.Reader, fin *os.Fi
 		if err := acc.ObserveLine(line); err != nil {
 			return false, err
 		}
-	}
-}
-
-func readPhaseWithoutReadDeadline(ctx context.Context, br *bufio.Reader, acc *Accumulator, deadEnd time.Time) (eof bool, err error) {
-	for {
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-		default:
-		}
-		if !time.Now().Before(deadEnd) {
-			return false, nil
-		}
-
-		line, err := br.ReadBytes('\n')
-		if len(line) > maxJSONLLineBytes {
-			return false, errors.New("jsonl line exceeds max size")
-		}
-		line = trimCRLF(line)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				if len(line) > 0 {
-					if err2 := acc.ObserveLine(line); err2 != nil {
-						return false, err2
-					}
-				}
-				return true, nil
-			}
-			return false, err
-		}
-		if err := acc.ObserveLine(line); err != nil {
-			return false, err
+		if ctx.Err() != nil {
+			return false, context.Canceled
 		}
 	}
 }
@@ -222,7 +291,7 @@ func readPhaseFromPump(ctx context.Context, acc *Accumulator, window time.Durati
 	for {
 		select {
 		case <-ctx.Done():
-			return false, ctx.Err()
+			return false, context.Canceled
 		case <-timerC:
 			return false, nil
 		case err, ok := <-errs:
@@ -262,8 +331,11 @@ func trimCRLF(line []byte) []byte {
 	return line
 }
 
-func (g *Guesser) emitSchema(out io.Writer, acc *Accumulator) error {
-	doc := BuildSchema(acc, g.cfg.variantThreshold, time.Now())
+func (g *Guesser) emitSchema(ctx context.Context, out io.Writer, acc *Accumulator) error {
+	doc, err := buildSchema(ctx, acc, g.cfg.variantThreshold, time.Now())
+	if err != nil {
+		return err
+	}
 	if g.cfg.omitVendorExt {
 		stripXVendorKeys(doc)
 	}
