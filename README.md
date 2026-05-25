@@ -1,64 +1,62 @@
 # guesschema
 
-Repository: [github.com/Olian04/guesschema](https://github.com/Olian04/guesschema) · Go module **`github.com/Olian04/guesschema`**
+![Demo image showing the usage example of CLI](./assets/demo.jpg)
 
-`guesschema` reads **JSON Lines** from **stdin** and writes a guessed **JSON Schema (draft 2020-12)** document to **stdout**. Optional **`--debug`** logs to **stderr** (long flag only).
+**guesschema** looks at many **JSON Lines** records (one JSON object per line) and **guesses** a **JSON Schema (draft 2020-12)** that describes what it has seen: field types, nesting, optional vs required fields (from how often keys appear), and sometimes `oneOf` when the same path carries conflicting types. It is a **bootstrap tool** for exploration, logging pipelines, and fixtures—not a guarantee that production data will always validate, and not a substitute for a hand-authored contract when you already know the model.
 
-## Install / build
+**CLI** — pipe JSONL into the binary and get one schema on stdout. Best when you are in a shell, notebook, or CI job and want a quick schema from a file or stream without writing code.
+
+**Library** (`pkg/guesschema`) — same inference inside a Go program: bounded **`Run`** windows like the CLI, or **`NewAccumulator` / `BuildSchema`** when you already control the lines (tests, ETL steps, APIs). Best when guesschema is one step in your own service or toolchain.
+
+## CLI
+
+### Install
+
+Pick a **`guesschema-<os>-<arch>`** binary from [Releases](https://github.com/Olian04/guesschema/releases) (with `checksums.txt` / SBOMs), or:
 
 ```bash
-# Global install (binary on $GOBIN or $GOPATH/bin)
 go install github.com/Olian04/guesschema/cmd/guesschema@latest
-
-# Pin in another module and run via the Go toolchain
-go get -tool github.com/Olian04/guesschema/cmd/guesschema@latest
-go tool guesschema --help
 ```
 
-Use `@latest` or a concrete tag. Each GitHub **Release** also attaches **pre-built** `guesschema-<os>-<arch>` binaries plus `checksums.txt` and SBOMs (see GoReleaser release notes).
+### Usage
 
-## Usage
-
-Read for at most **`--read-window`** (default **1s**), emit one schema, exit. If **EOF** arrives first, emit on EOF.
+Reads JSONL until **`--read-window`** elapses (default **1s**) or **EOF**, then prints one schema object.
 
 ```bash
-printf '%s\n' '{"id":1,"name":"a"}' '{"id":2,"name":"b"}' | ./dist/guesschema
+printf '%s\n' '{"id":1,"name":"a"}' '{"id":2,"name":"b"}' | guesschema
 ```
 
-## Flags
+### Flags
 
-| Flag                             | Meaning                                                                                                        |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `--read-window <duration>`       | Max wall time to read JSONL (default **1s**).                                                                  |
-| `--variant-threshold <float>`    | **T** for same-path `oneOf` vs single winner (default **0.1**).                                                |
-| `--no-extra`                     | Strip vendor extensions: remove object keys starting with **`x-`** from stdout JSON.                           |
-| `--start-window-on-next-message` | Start each read-window only after first received JSONL line. Useful to avoid empty-window emits on idle stdin. |
-| `--debug`                        | stderr **slog** (no short alias).                                                                              |
-| `-v` / `--version`               | Version (urfave/cli).                                                                                          |
+| Flag                             | Meaning                                                                       |
+| -------------------------------- | ----------------------------------------------------------------------------- |
+| `--read-window <duration>`       | Max time to read stdin (default **1s**).                                      |
+| `--variant-threshold <float>`    | Same-path `oneOf` vs single winner; **T** in (0, 1), default **0.1**.         |
+| `--no-extra`                     | Drop object keys starting with **`x-`** from output.                          |
+| `--start-window-on-next-message` | Start the read window on first line (avoids empty-window emit on idle stdin). |
+| `--debug`                        | Structured logs on stderr.                                                    |
+| `-v` / `--version`               | Version info.                                                                 |
 
-## Schema output
+### Output
 
-- Root **`$schema`**: `https://json-schema.org/draft/2020-12/schema`
-- **`x-guesschema-generated-at`**: RFC3339 on every emit
-- **`x-guesschema-invalid-json-lines`**: invalid JSONL count at root
-- Per-variant stats as siblings: **`x-guesschema-lines-with`**, **`x-guesschema-lines-total`**, **`x-guesschema-likelihood`**
+- **`$schema`**: `https://json-schema.org/draft/2020-12/schema`
+- **`x-guesschema-generated-at`**, **`x-guesschema-invalid-json-lines`**
+- Per-leaf **`x-guesschema-lines-with`**, **`x-guesschema-lines-total`**, **`x-guesschema-likelihood`** (unless **`--no-extra`**)
+- Property paths: [RFC 6901](https://www.rfc-editor.org/rfc/rfc6901) pointers from each line’s root
 
-Paths follow [RFC 6901](https://www.rfc-editor.org/rfc/rfc6901) from each line’s JSON root.
+---
 
 ## Library
 
-Import **`github.com/Olian04/guesschema/pkg/guesschema`**. Build a **`Guesser`** with **`New`** and functional options, then **`Run`** per JSONL stream:
+`github.com/Olian04/guesschema/pkg/guesschema`
+
+```bash
+go get github.com/Olian04/guesschema/pkg/guesschema@latest
+```
+
+**`New` → `Guesser`** (immutable, concurrent **`Run`**). **`Run(ctx, r, w)`** mirrors the CLI read window. **`NewAccumulator` + `BuildSchema`** when you already have lines and do not need timing.
 
 ```go
-import (
-    "bytes"
-    "context"
-    "strings"
-    "time"
-
-    "github.com/Olian04/guesschema/pkg/guesschema"
-)
-
 g, err := guesschema.New(
     guesschema.WithReadWindow(time.Second),
     guesschema.WithVariantThreshold(0.1),
@@ -67,22 +65,27 @@ if err != nil {
     return err
 }
 var out bytes.Buffer
-return g.Run(ctx, strings.NewReader("{\"a\":1}\n"), &out)
+if err := g.Run(ctx, strings.NewReader("{\"a\":1}\n"), &out); err != nil {
+    return err
+}
 ```
 
-Lower-level schema inference without time windows uses the same package: **`NewAccumulator`**, **`BuildSchema`**, etc. See godoc on **`With*`** options for streaming examples.
+```go
+acc := guesschema.NewAccumulator()
+for _, line := range lines {
+    _ = acc.ObserveLine([]byte(line))
+}
+schema := guesschema.BuildSchema(acc, 0.1, time.Now().UTC())
+```
 
-## Testing
+Option godoc: **`pkg/guesschema`**. Examples: **`test/unit/pkg/guesschema/`**.
 
-**All tests live under `test/`** — no `*_test.go` beside production code (`cmd/`, `internal/`, or `pkg/`). Tests assert **consumer contracts** only, not `internal/` implementation.
+## Developing
 
-| Layer | What is tested | Where |
-| --- | --- | --- |
-| **Library** | Public API: `pkg/guesschema` (`New`, `Guesser.Run`, `With*`, `NewAccumulator`, `BuildSchema`) | `test/unit/pkg/guesschema/` |
-| **CLI** | Compiled `cmd/guesschema` binary (stdin/stdout/flags, including invalid flags), same as a shell pipeline | `test/blackbox/` |
+Tests live only under **`test/`** (`test/unit/pkg/…` = library contract, `test/blackbox/…` = built CLI).
 
-Do **not** import `internal/guesschema` from tests. Run **`make test`** or **`go test ./...`**.
+```bash
+make test    # or: go test ./test/...
+```
 
-## Agent / contributor context
-
-See [docs/AGENTS.md](docs/AGENTS.md) and [docs/design/guesschema.md](docs/design/guesschema.md).
+[docs/AGENTS.md](docs/AGENTS.md) · [docs/design/guesschema.md](docs/design/guesschema.md)

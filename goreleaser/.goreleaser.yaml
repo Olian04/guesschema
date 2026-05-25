@@ -67,6 +67,8 @@ release:
   footer: |
     ## Install with the Go toolchain
 
+    ### CLI
+
     **Global binary** (typical):
 
     ```bash
@@ -77,10 +79,23 @@ release:
 
     ```bash
     go get -tool github.com/Olian04/guesschema/cmd/guesschema@{{ .Tag }}
-    go tool github.com/Olian04/guesschema/cmd/guesschema --help
+    go tool guesschema --help
     ```
 
-    Use `@latest` or a semver tag as needed.
+    ### Library (other Go projects)
+
+    Import **`github.com/Olian04/guesschema/pkg/guesschema`** only (public API; not `internal/…`):
+
+    ```bash
+    go get github.com/Olian04/guesschema/pkg/guesschema@{{ .Tag }}
+    ```
+
+    ```go
+    import "github.com/Olian04/guesschema/pkg/guesschema"
+
+    g, err := guesschema.New(guesschema.WithReadWindow(time.Second))
+    // … g.Run(ctx, jsonlReader, schemaWriter)
+    ```
 
     ## Pre-built binaries
 
