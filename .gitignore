@@ -31,7 +31,11 @@ coverage.*
 *.coverprofile
 profile.cov
 
+# VSCode
+.vscode/
+
 # This project (Makefile / GoReleaser)
 dist/
 /guesschema
 tmp.jsonl
+
